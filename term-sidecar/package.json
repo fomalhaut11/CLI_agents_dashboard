@@ -1,0 +1,11 @@
+{
+  "name": "term-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "node-pty + ConPTY terminal backend (verification sidecar for stream_dashboard)",
+  "main": "server.js",
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  }
+}

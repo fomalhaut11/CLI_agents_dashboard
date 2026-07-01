@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# node-pty 终端后端依赖 (还原: cd term-sidecar && npm install)
+node_modules/
+
+# 运行时
+_proc_logs/
+
+# 本地配置 (每个使用者自己的项目配置, 不进仓; 用 stream-dashboard.config.example.json 作模板)
+stream-dashboard.config.json
+stream-dashboard.config.local.json
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

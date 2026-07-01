@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>term-sidecar (node-pty + ConPTY) 验证</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <style>
+    html,body{margin:0;height:100%;background:#000;color:#ccc;font-family:Consolas,monospace}
+    #bar{height:34px;display:flex;align-items:center;gap:8px;padding:0 10px;background:#111;font-size:13px;box-sizing:border-box}
+    #bar b{color:#6cf}
+    #bar button{background:#234;color:#cdf;border:1px solid #357;border-radius:4px;padding:3px 9px;cursor:pointer;font-size:12px}
+    #bar #sz{color:#999}
+    #bar #st{margin-left:auto;color:#7c7}
+    #term{height:calc(100vh - 34px)}
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <b>ConPTY 验证</b>
+    <button onclick="run('claude -c')">跑 claude -c</button>
+    <button onclick="run('claude')">跑 claude</button>
+    <button onclick="run('codex')">跑 codex</button>
+    <button onclick="run('1..200')">打印200行(测纯滚动)</button>
+    <button onclick="refit()">重新适配(fit)</button>
+    <button onclick="run('cls')">清屏</button>
+    <span id="sz">—</span>
+    <span id="st">connecting…</span>
+  </div>
+  <div id="term"></div>
+  <script>
+    const term = new Terminal({ fontFamily: "Consolas, monospace", fontSize: 13,
+      theme: { background: "#000" }, cursorBlink: true, scrollback: 20000,
+      // 关键: 告诉 xterm.js 对面是 ConPTY, 切到 ConPTY 兼容模式处理 reflow/scrollback
+      // (否则 ConPTY "resize 时把 viewport 上顶" 的 quirk 会搞坏 scrollback -> 滚不动)
+      windowsPty: { backend: "conpty", buildNumber: 26100 } });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById("term"));
+
+    const st = document.getElementById("st");
+    const sz = document.getElementById("sz");
+    let lc = 0, lr = 0, ws = null;
+
+    function refit() {
+      try { fit.fit(); } catch (e) {}
+      sz.textContent = `${term.cols}x${term.rows}`;
+      sendResize();
+    }
+    function sendResize() {
+      const c = term.cols, r = term.rows;
+      if (!ws || ws.readyState !== 1) return;
+      if (c === lc && r === lr) return;
+      lc = c; lr = r;
+      ws.send(JSON.stringify({ r: [c, r] }));
+    }
+    function run(cmd) { refit(); if (ws && ws.readyState === 1) ws.send(JSON.stringify({ i: cmd + "\r" })); term.focus(); }
+
+    function connect() {
+      const tid = "test-" + Math.random().toString(36).slice(2, 8);
+      const cwd = new URLSearchParams(location.search).get("cwd") || "F:\\zx\\multifactors_beta";
+      ws = new WebSocket(`ws://${location.host}/pty?term=${tid}&new=1&cwd=${encodeURIComponent(cwd)}`);
+      ws.binaryType = "arraybuffer";
+      ws.onopen = () => { st.textContent = "connected (ConPTY)"; refit(); };
+      ws.onmessage = (e) => term.write(new Uint8Array(e.data));
+      ws.onclose = () => { st.textContent = "disconnected"; term.write("\r\n\x1b[31m[disconnected]\x1b[0m\r\n"); };
+      ws.onerror = () => { st.textContent = "ws error"; };
+      term.onData((d) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ i: d })); });
+    }
+
+    // 关键: 等所有 CDN 资源(尤其 xterm.css)和布局都就绪后再首次 fit, 避免量错字符尺寸 -> rows 偏大
+    window.addEventListener("load", () => {
+      requestAnimationFrame(() => requestAnimationFrame(() => { refit(); connect(); }));
+    });
+    // 容器尺寸变化自动重适配 (比只听 window.resize 更可靠)
+    new ResizeObserver(() => refit()).observe(document.getElementById("term"));
+  </script>
+</body>
+</html>

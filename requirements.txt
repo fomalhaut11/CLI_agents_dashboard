@@ -1,0 +1,7 @@
+# Stream Dashboard — Python 依赖
+flask>=2.0
+flask-sock>=0.6
+psutil>=5.9
+# 终端后端走 node-pty (需 Node.js + `cd term-sidecar && npm install`), 不是 Python 依赖。
+# pywinpty 仅在设 STREAM_DASHBOARD_PTY=winpty 回滚旧后端时才需要 (Windows only):
+#   pip install pywinpty

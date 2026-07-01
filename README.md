@@ -1,0 +1,82 @@
+# Stream Dashboard
+
+一个**本地 Web 控制台**,用于管理**多条 git worktree 并行开发流(stream)**:把 git 动态、约定守卫、diff/提交、多终端(持久 PTY)、**Claude / Codex 会话恢复与 transcript 查看**、进程、产出浏览整合到一个浏览器页面。
+
+> 亮点:**Windows 下能正确渲染 Claude Code / Codex 等全屏 TUI 的 Web 终端**——用 node-pty 捆绑的新版 ConPTY 修复了旧 winpty / 系统 ConPTY 在全屏 TUI 下 scrollback 滚不到历史的问题。
+
+仅监听 `127.0.0.1`。终端和进程都是**真实 shell**,请勿绑定 `0.0.0.0` 对外暴露。
+
+## 功能
+
+- **多 stream 状态板**:每条 stream 一个 git worktree,汇总 git 状态 / 约定守卫(越界改动告警)/ diff / 受控提交。
+- **持久多终端**:每个终端一个真实 shell,浏览器刷新/断线不杀会话(进程登记在服务端)。
+- **Claude / Codex 会话恢复 + transcript 查看**:读取结构化会话记录,稳定回看历史,不依赖 TUI 重绘。
+- **产出查看器**:白名单根目录下浏览报告/图表/表格(png/pdf/docx/csv/parquet…),带路径穿越防护。
+- **进程 / 作业面板**、快捷命令。
+
+## 依赖
+
+- **Python 3.8+**:`pip install -r requirements.txt`(flask / flask-sock / psutil)
+- **Node.js 16+**(终端后端 node-pty):`cd term-sidecar && npm install`
+- xterm.js 走 CDN,无需前端构建。
+
+> **平台**:Windows-first(ConPTY 修复针对 Windows)。类 Unix 下 node-pty 走原生 pty,终端同样可用;`shell` 默认取 `$SHELL`/bash。
+
+## 快速开始
+
+```bash
+# 1. 装依赖
+pip install -r requirements.txt
+cd term-sidecar && npm install && cd ..
+
+# 2. 写配置(复制示例, 按你的项目改)
+cp stream-dashboard.config.example.json stream-dashboard.config.json
+#   至少改 repoRoot 指向你要管理的仓库; streams / 白名单 / 产出目录按需配
+
+# 3. 启动
+#   Windows:  start.bat        类 Unix:  ./start.sh        通用:  python app.py
+```
+
+浏览器打开 http://127.0.0.1:5111。
+
+## 配置
+
+所有项目专属配置都在 **`stream-dashboard.config.json`**(不进仓;模板见 `stream-dashboard.config.example.json`)。字段全部可选,缺省则对应面板呈空态。
+
+配置文件定位顺序:`STREAM_DASHBOARD_CONFIG` 环境变量 → `<repoRoot>/stream-dashboard.config.json` → dashboard 目录。
+路径支持 `${REPO_ROOT}` `${DATA_ROOT}` `${WT_BASE}` 插值。
+
+常用环境变量:
+
+| 变量 | 作用 |
+|---|---|
+| `STREAM_DASHBOARD_CONFIG` | 指定配置文件路径 |
+| `STREAM_DASHBOARD_REPO` | 覆盖目标仓库根(REPO_ROOT) |
+| `STREAM_DASHBOARD_PORT` | 端口(默认 5111) |
+| `STREAM_DASHBOARD_PTY` | `winpty` 回滚到旧终端后端(需 `pip install pywinpty`) |
+| `NODE_EXE` / `PYTHON` | 指定 node / python 解释器 |
+
+关键字段速览(完整见示例文件注释):`repoRoot` / `streamFolder`(分支→专属文件夹)/ `corePrefixes`(共享白名单)/ `quickCommands` / `jobCommands` / `artifacts`(产出根,支持 `worktrees` 自动生成)/ `keyDatasets`。
+
+## 终端后端(ConPTY 修复)
+
+终端 PTY 用 **node-pty 捆绑的新版 ConPTY**(`useConptyDll`),而非 Win10 系统旧 ConPTY / winpty——旧后端在 Claude/Codex 等全屏 TUI 下 scrollback 缺陷导致**滚不到历史**。实现:Python `_Term` 为每个终端起一个 `term-sidecar/pty-bridge.js` 子进程(stdin 帧=输入/resize,stdout=PTY 原始字节),前端 xterm 传 `windowsPty:{backend:"conpty"}`。
+
+回滚:`STREAM_DASHBOARD_PTY=winpty`(仅 Windows,需 pywinpty)。
+
+## 项目布局
+
+```
+app.py                          后端 (Flask + flask-sock + node-pty 桥接)
+config.py                       配置加载器 (读 JSON + ${VAR} 插值 + 默认值)
+stream-dashboard.config.example.json   配置模板
+static/  templates/             前端 (xterm.js via CDN)
+term-sidecar/                   node-pty 终端后端
+  pty-bridge.js                 每终端一个桥接子进程 (新版 ConPTY)
+  package.json                  node 依赖 (npm install)
+start.bat / start.sh            启动脚本
+```
+
+## License
+
+MIT — 见 [LICENSE](LICENSE)。终端基于 [xterm.js](https://github.com/xtermjs/xterm.js) 与 [node-pty](https://github.com/microsoft/node-pty)(均 MIT)。

@@ -1,0 +1,62 @@
+{
+  "_help": "复制本文件为 stream-dashboard.config.json 并按你的项目修改。放在目标仓库根, 或用环境变量 STREAM_DASHBOARD_CONFIG 指定。所有字段可选; 缺省则对应面板呈空态。路径支持 ${REPO_ROOT} ${DATA_ROOT} ${WT_BASE} 插值。",
+
+  "repoRoot": ".",
+  "_repoRoot": "要管理的目标仓库根。相对路径按本配置文件所在目录解析; 也可用环境变量 STREAM_DASHBOARD_REPO 覆盖。",
+
+  "host": "127.0.0.1",
+  "port": 5111,
+  "_shell": "终端 shell。缺省: Windows=powershell -NoLogo, 类 Unix=$SHELL 或 bash。可显式指定, 如 [\"pwsh\",\"-NoLogo\"] 或 [\"bash\",\"-i\"]。",
+
+  "streamFolder": {
+    "stream/feature-a": "streams/feature_a",
+    "stream/feature-b": "streams/feature_b"
+  },
+  "_streamFolder": "分支 -> 该 stream 允许改动的专属文件夹。stream 分支改到 corePrefixes 里的共享路径 = 越界警告。",
+
+  "corePrefixes": ["core/", "docs/", "config/", "tools/", "README.md", ".gitignore"],
+  "_corePrefixes": "共享核心白名单前缀; stream 分支改到这些 = 应走 main。",
+
+  "registryPaths": [],
+  "_registryPaths": "共享单文件注册表(多 stream 并行时改动应走 main, 防冲突)。",
+
+  "quickCommands": [
+    {"label": "git status", "cmd": "git status -sb"},
+    {"label": "git log(10)", "cmd": "git log --oneline -10"},
+    {"label": "pull main", "cmd": "git merge --ff-only main"}
+  ],
+  "_quickCommands": "终端快捷命令(点击写入当前终端并回车)。",
+
+  "jobCommands": [
+    {"label": "run tests", "cmd": "pytest -q"}
+  ],
+  "_jobCommands": "作业型命令(作为受管进程启动, 输出落日志面板)。",
+
+  "artifacts": {
+    "_help": "产出查看器: 只暴露这些白名单根(路径做 traversal 防护)。不配则产出面板空。",
+    "streams": [
+      {"key": "all", "label": "全部"},
+      {"key": "feature-a", "label": "feature-a"},
+      {"key": "feature-b", "label": "feature-b"}
+    ],
+    "streamClasses": [
+      {"stream": "feature-a", "label": "feature-a", "patterns": ["a_*"]},
+      {"stream": "feature-b", "label": "feature-b", "patterns": ["b_*"]}
+    ],
+    "roots": [
+      {"key": "reports", "group": "报告", "stream": "all", "task": "reports", "label": "报告 (docs/reports)", "path": "${REPO_ROOT}/docs/reports"},
+      {"key": "a_charts", "group": "图表", "stream": "feature-a", "task": "charts", "label": "全部图表 (递归汇总)", "virtual": "stream_charts"}
+    ],
+    "worktrees": {
+      "_help": "可选: 各 stream 独立 git worktree 的产出目录, 自动生成 root。worktree 不存在时前端置灰。",
+      "streams": {"feature-a": "wt-feature-a", "feature-b": "wt-feature-b"},
+      "subdirs": [["results", "结果", "results"], ["docs/reports", "报告", "reports"]]
+    }
+  },
+
+  "_dataRoot": "可选: 数据根目录(供 ${DATA_ROOT} 插值与数据面板)。也可用环境变量 DATA_ROOT。",
+  "keyDatasets": [],
+  "_keyDatasets": "数据面板关注的数据集: [标签, 相对 DATA_ROOT 路径, 最大新鲜天数(null=不判)]。",
+  "dirCounts": [],
+  "_dirCounts": "目录计数: [标签, 相对 DATA_ROOT 路径, 统计后缀]。"
+}
