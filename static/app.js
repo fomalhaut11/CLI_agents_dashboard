@@ -350,27 +350,51 @@ async function regDel(id){ if(confirm("删除实验 "+id+"?")){ await jpost("/ap
 
 // ===== 进程 =====
 let procSel=null, procTimer=null;
-async function startJob(cmd,label){ const j=await jpost("/api/proc/start",{path:activePath,cmd,label}); if(j.id){procSel=j.id;} loadProcs(); }
+async function startProcAt(path,cmd,label,force){
+  const j=await jpost("/api/proc/start",{path,cmd,label,force:!!force});
+  if(j.dup!==undefined && !force){
+    if(confirm("同命令已在 #"+j.dup+" 运行, 仍要再跑一份?")) return startProcAt(path,cmd,label,true);
+    procSel=j.dup; loadProcs(); return; }
+  if(j.id){procSel=j.id;} loadProcs();
+}
+async function startJob(cmd,label){ await startProcAt(activePath,cmd,label); }
 async function startCustom(){ const cmd=document.getElementById("customcmd").value.trim(); if(!cmd)return;
-  await jpost("/api/proc/start",{path:activePath,cmd,label:cmd}); document.getElementById("customcmd").value=""; loadProcs(); }
+  document.getElementById("customcmd").value=""; await startProcAt(activePath,cmd,cmd); }
+function procSub(p){
+  let s="";
+  if(p.status==="running") s=`<span class="rcok">running</span>${p.dur?" · "+p.dur:""}${p.cpu!==null?` · cpu ${p.cpu}%`:""}${p.mem_mb!==null?` · ${p.mem_mb}MB`:""}`;
+  else if(p.status==="lost") s=`<span class="rcunk">lost</span> · 面板停机期间结束, rc 未知`;
+  else if(p.rc===null) s=`<span class="rcunk">exited rc=?</span>${p.dur?" · "+p.dur:""}`;
+  else if(p.rc===0) s=`<span class="rcok">rc=0</span>${p.dur?" · "+p.dur:""}`;
+  else s=`<span class="rcbad">rc=${p.rc}</span>${p.dur?" · "+p.dur:""}`;
+  return s+` · ${p.started}${p.ended?" → "+p.ended:""} · ${esc(p.path)}`;
+}
 async function loadProcs(){
   const list=await jget("/api/proc/list");
   document.getElementById("proclist").innerHTML=list.map(p=>`
-    <div class="procitem ${p.id===procSel?"sel":""}" onclick="selProc(${p.id})">
-      <div class="lbl"><span class="dot ${p.status}"></span>${esc(p.label)} <span style="color:#6e7681">#${p.id}</span></div>
-      <div class="sub">${p.status}${p.rc!==null?" rc="+p.rc:""} · ${p.started} · ${esc(p.path)}</div>
-      ${p.status==="running"?`<button onclick="event.stopPropagation();stopProc(${p.id})">停止</button>`:""}
+    <div class="procitem ${p.id===procSel?"sel":""} ${p.status==="exited"&&p.rc!==null&&p.rc!==0?"fail":""}" onclick="selProc(${p.id})">
+      <div class="lbl"><span class="dot ${p.status}"></span>${esc(p.label)} <span style="color:#6e7681">#${p.id}${p.adopted?" (接管)":""}</span></div>
+      <div class="sub">${procSub(p)}</div>
+      ${p.status==="running"
+        ?`<button onclick="event.stopPropagation();stopProc(${p.id})">停止</button>`
+        :`<button onclick="event.stopPropagation();rerunProc(${p.id})">重跑</button>
+          <a href="/api/proc/log?id=${p.id}&dl=1" onclick="event.stopPropagation()" style="font-size:11px;margin-left:6px">日志</a>`}
     </div>`).join("")||"<div style='color:#6e7681'>无进程</div>";
   if(procSel) showProcLog();
   if(procTimer) clearTimeout(procTimer);
   if(document.getElementById("tab-procs").classList.contains("active")) procTimer=setTimeout(loadProcs,2000);
 }
 function selProc(id){ procSel=id; loadProcs(); }
+async function rerunProc(id){
+  const list=await jget("/api/proc/list"); const p=list.find(x=>x.id===id); if(!p)return;
+  await startProcAt(p.path,p.cmd,p.label);
+}
 async function showProcLog(){ if(!procSel)return; const j=await jget("/api/proc/log?id="+procSel);
   const pre=document.getElementById("proclog"); const atBottom=pre.scrollHeight-pre.scrollTop-pre.clientHeight<40;
-  pre.textContent=j.text||"(无输出)"; if(atBottom) pre.scrollTop=pre.scrollHeight; }
+  pre.textContent=(j.truncated?"(…前文截断, 完整日志点条目上的\"日志\"下载)\n":"")+(j.text||"(无输出)");
+  if(atBottom) pre.scrollTop=pre.scrollHeight; }
 async function stopProc(id){ await jpost("/api/proc/stop",{id}); loadProcs(); }
-async function clearProcs(){ await jpost("/api/proc/clear",{}); loadProcs(); }
+async function clearProcs(delLogs){ await jpost("/api/proc/clear",{del_logs:!!delLogs}); if(delLogs||!procSel)procSel=null; loadProcs(); }
 
 // ===== 会话恢复 (窗口关了, 对话还在盘上; claude + codex 双源) =====
 let sessPath=null;
@@ -666,9 +690,8 @@ async function artDocx(e){
 
 // ===== 数据 =====
 async function startManagedProc(cmd,label){
-  const j=await jpost("/api/proc/start",{path:activePath,cmd,label});
-  if(j.id){ procSel=j.id; document.querySelector('.tab[data-tab="procs"]').click(); loadProcs(); }
-  else toast("启动失败: "+JSON.stringify(j));
+  await startProcAt(activePath,cmd,label);
+  if(procSel){ document.querySelector('.tab[data-tab="procs"]').click(); loadProcs(); }
 }
 function startAllDataHealthCheck(){
   startManagedProc("python tools/data_management/scheduled_data_updater.py --data-type all --health-check","data 全量健康检查");

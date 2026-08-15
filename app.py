@@ -310,10 +310,182 @@ def api_registry_post():
 
 
 # ---------------- 路由: 进程管理 ----------------
+# 注册表落盘 (_proc_logs/procs.json): dashboard 重启后按 pid+create_time 认领仍在跑的进程,
+# 序号续接不覆盖旧日志. 停止走 psutil 整树 (shell=True 的壳下真实工作进程一并处理).
 
-PROCS = {}          # id -> {proc, label, cmd, path, started, log}
+PROCS = {}          # id -> {label,cmd,path,started_ts,ended_ts,rc,log,os_pid,create_time,
+                    #        proc(Popen|None), logf, ps(psutil.Process|None), adopted, _pscache}
 PROC_SEQ = {"n": 0}
 PROC_LOCK = threading.Lock()
+PROC_REG = os.path.join(C.PROC_LOG_DIR, "procs.json")
+_PROC_PERSIST = ("label", "cmd", "path", "started_ts", "ended_ts", "rc",
+                 "log", "os_pid", "create_time")
+
+
+def _proc_save():
+    rows = []
+    for pid in sorted(PROCS):
+        row = {k: PROCS[pid].get(k) for k in _PROC_PERSIST}
+        row["id"] = pid
+        rows.append(row)
+    tmp = PROC_REG + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, PROC_REG)
+    except OSError:
+        pass
+
+
+def _ps_attach(os_pid, create_time):
+    """按 pid 认领进程; create_time 不吻合视为 PID 已复用, 拒绝认领."""
+    if psutil is None or not os_pid:
+        return None
+    try:
+        ps = psutil.Process(os_pid)
+        if create_time and abs(ps.create_time() - create_time) > 2.0:
+            return None
+        return ps
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _proc_load():
+    try:
+        with open(PROC_REG, encoding="utf-8") as f:
+            rows = json.load(f)
+    except Exception:  # noqa: BLE001
+        return
+    for row in rows:
+        pid = row.pop("id", None)
+        if pid is None:
+            continue
+        p = {k: row.get(k) for k in _PROC_PERSIST}
+        p.update({"proc": None, "logf": None, "ps": None, "adopted": True})
+        if p["rc"] is None and p["ended_ts"] is None:            # 存盘时还在跑
+            p["ps"] = _ps_attach(p["os_pid"], p["create_time"])
+            if p["ps"] is None:                                  # 停机期间已结束, rc 无从得知
+                p["ended_ts"] = -1
+        PROCS[pid] = p
+        PROC_SEQ["n"] = max(PROC_SEQ["n"], pid)
+
+
+def _proc_poll(p):
+    """刷新单条状态, 返回 'running'/'exited'/'lost'. 状态跃迁时记录结束时间并关日志句柄."""
+    if p.get("ended_ts") == -1:
+        return "lost"                                            # 停机期间结束, 结束时间/rc 未知
+    if p.get("rc") is not None or p.get("ended_ts"):
+        return "exited"
+    if p.get("proc") is not None:
+        rc = p["proc"].poll()
+        if rc is None:
+            return "running"
+        p["rc"], p["ended_ts"] = rc, time.time()
+    elif p.get("ps") is not None:
+        try:
+            alive = p["ps"].is_running()
+        except Exception:  # noqa: BLE001
+            alive = False
+        if alive:
+            return "running"
+        p["ended_ts"] = time.time()                              # 认领的进程拿不到 rc
+    else:
+        return "lost"
+    try:
+        if p.get("logf"):
+            p["logf"].close()
+            p["logf"] = None
+    except Exception:  # noqa: BLE001
+        pass
+    _proc_save()
+    return "exited"
+
+
+def _proc_tree(p):
+    """当前进程树 (psutil.Process 列表). 按 pid 缓存对象, cpu_percent 才有上次采样基线."""
+    root = p.get("ps")
+    if root is None and p.get("proc") is not None and psutil is not None:
+        try:
+            root = p["ps"] = psutil.Process(p["proc"].pid)
+        except Exception:  # noqa: BLE001
+            return []
+    if root is None:
+        return []
+    try:
+        kids = root.children(recursive=True)
+    except Exception:  # noqa: BLE001
+        kids = []
+    cache = p.setdefault("_pscache", {})
+    tree, seen = [], set()
+    for x in [root] + kids:
+        seen.add(x.pid)
+        tree.append(cache.setdefault(x.pid, x))
+    for stale in [k for k in cache if k not in seen]:
+        del cache[stale]
+    return tree
+
+
+def _proc_usage(p):
+    """整树 CPU% / 内存MB. 首轮 cpu_percent 无基线返回 0, 下一轮 (2s 后) 起有意义."""
+    cpu, mem = 0.0, 0
+    for x in _proc_tree(p):
+        try:
+            cpu += x.cpu_percent(None)
+            mem += x.memory_info().rss
+        except Exception:  # noqa: BLE001
+            pass
+    return round(cpu, 1), round(mem / 1048576)
+
+
+def _proc_kill_tree(p):
+    """整树 terminate -> wait 5s -> kill 幸存者. 无 psutil 时退化为只杀壳."""
+    victims = _proc_tree(p)
+    if not victims:
+        if p.get("proc") is not None and p["proc"].poll() is None:
+            p["proc"].terminate()
+        return
+    for x in victims:
+        try:
+            x.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        _, alive = psutil.wait_procs(victims, timeout=5)
+        for x in alive:
+            try:
+                x.kill()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _proc_start(cmd, path, label, force=False):
+    if not force:
+        dup = [pid for pid, p in sorted(PROCS.items())
+               if p.get("cmd") == cmd and p.get("path") == path and _proc_poll(p) == "running"]
+        if dup:
+            return None, dup[-1]
+    with PROC_LOCK:
+        PROC_SEQ["n"] += 1
+        pid = PROC_SEQ["n"]
+    logpath = os.path.join(C.PROC_LOG_DIR, "proc_%d.log" % pid)
+    logf = open(logpath, "wb")           # 二进制落盘: 子进程编码原样保留, 读端再猜
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)   # 不随 dashboard Ctrl+C 陪葬
+    proc = subprocess.Popen(cmd, cwd=path, shell=True, stdout=logf,
+                            stderr=subprocess.STDOUT, creationflags=flags)
+    p = {"label": label, "cmd": cmd, "path": path, "started_ts": time.time(),
+         "ended_ts": None, "rc": None, "log": logpath, "os_pid": proc.pid,
+         "create_time": None, "proc": proc, "logf": logf, "ps": None, "adopted": False}
+    if psutil is not None:
+        try:
+            p["ps"] = psutil.Process(proc.pid)
+            p["create_time"] = p["ps"].create_time()
+        except Exception:  # noqa: BLE001
+            pass
+    PROCS[pid] = p
+    _proc_save()
+    return pid, None
 
 
 @app.route("/api/proc/start", methods=["POST"])
@@ -322,27 +494,43 @@ def api_proc_start():
     path, cmd, label = b.get("path") or C.REPO_ROOT, b.get("cmd"), b.get("label") or b.get("cmd")
     if not cmd:
         return jsonify({"rc": 1, "out": "缺命令"}), 400
-    with PROC_LOCK:
-        PROC_SEQ["n"] += 1
-        pid = PROC_SEQ["n"]
-    logpath = os.path.join(C.PROC_LOG_DIR, "proc_%d.log" % pid)
-    logf = open(logpath, "w", encoding="utf-8", errors="replace")
-    proc = subprocess.Popen(cmd, cwd=path, shell=True, stdout=logf,
-                            stderr=subprocess.STDOUT, text=True)
-    PROCS[pid] = {"proc": proc, "label": label, "cmd": cmd, "path": path,
-                  "started": time.strftime("%H:%M:%S"), "log": logpath, "logf": logf}
+    pid, dup = _proc_start(cmd, path, label, force=bool(b.get("force")))
+    if pid is None:
+        return jsonify({"rc": 1, "dup": dup,
+                        "out": "同命令已在 #%d 运行, 需 force 强制再跑" % dup}), 409
     return jsonify({"rc": 0, "id": pid})
+
+
+def _fmt_ts(ts):
+    return time.strftime("%m-%d %H:%M:%S", time.localtime(ts)) if ts and ts > 0 else ""
+
+
+def _fmt_dur(sec):
+    sec = int(sec)
+    if sec < 60:
+        return "%ds" % sec
+    if sec < 3600:
+        return "%dm%02ds" % (sec // 60, sec % 60)
+    return "%dh%02dm" % (sec // 3600, sec % 3600 // 60)
 
 
 @app.route("/api/proc/list")
 def api_proc_list():
     out = []
     for pid, p in sorted(PROCS.items()):
-        rc = p["proc"].poll()
-        out.append({"id": pid, "label": p["label"], "cmd": p["cmd"], "path": p["path"],
-                    "started": p["started"],
-                    "status": "running" if rc is None else "exited",
-                    "rc": rc})
+        st = _proc_poll(p)
+        row = {"id": pid, "label": p["label"], "cmd": p["cmd"], "path": p["path"],
+               "status": st, "rc": p.get("rc"), "adopted": bool(p.get("adopted")),
+               "started": _fmt_ts(p.get("started_ts")), "ended": _fmt_ts(p.get("ended_ts")),
+               "dur": "", "cpu": None, "mem_mb": None}
+        if st == "running":
+            if p.get("started_ts"):
+                row["dur"] = _fmt_dur(time.time() - p["started_ts"])
+            if psutil is not None:
+                row["cpu"], row["mem_mb"] = _proc_usage(p)
+        elif st == "exited" and p.get("started_ts") and (p.get("ended_ts") or 0) > 0:
+            row["dur"] = _fmt_dur(p["ended_ts"] - p["started_ts"])
+        out.append(row)
     return jsonify(out)
 
 
@@ -352,32 +540,66 @@ def api_proc_log():
     p = PROCS.get(pid)
     if not p:
         return jsonify({"text": "(无此进程)"})
+    if request.args.get("dl"):
+        try:
+            return send_file(p["log"], as_attachment=True,
+                             download_name=os.path.basename(p["log"]))
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"text": "(日志下载失败: %s)" % e}), 404
+    tail = 20000
     try:
-        with open(p["log"], encoding="utf-8", errors="replace") as f:
-            text = f.read()
+        size = os.path.getsize(p["log"])
+        with open(p["log"], "rb") as f:
+            if size > tail:
+                f.seek(size - tail)
+                data = f.read()
+                cut = data.find(b"\n")                           # 掐掉可能截断的首行
+                data = data[cut + 1:] if cut >= 0 else data
+            else:
+                data = f.read()
     except OSError:
-        text = ""
-    return jsonify({"text": text[-20000:]})
+        data = b""
+    text = None
+    for enc in ("utf-8", "gbk"):                                 # 子进程常见两种编码
+        try:
+            text = data.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = data.decode("utf-8", errors="replace")
+    return jsonify({"text": text, "truncated": size > tail if data else False})
 
 
 @app.route("/api/proc/stop", methods=["POST"])
 def api_proc_stop():
     pid = int(request.get_json(force=True).get("id", 0))
     p = PROCS.get(pid)
-    if p and p["proc"].poll() is None:
-        p["proc"].terminate()
+    if p and _proc_poll(p) == "running":
+        _proc_kill_tree(p)
     return jsonify({"rc": 0})
 
 
 @app.route("/api/proc/clear", methods=["POST"])
 def api_proc_clear():
-    for pid in [k for k, v in PROCS.items() if v["proc"].poll() is not None]:
+    b = request.get_json(force=True) or {}
+    for pid in [k for k, v in PROCS.items() if _proc_poll(v) != "running"]:
+        p = PROCS.pop(pid)
         try:
-            PROCS[pid]["logf"].close()
+            if p.get("logf"):
+                p["logf"].close()
         except Exception:  # noqa: BLE001
             pass
-        del PROCS[pid]
+        if b.get("del_logs"):
+            try:
+                os.remove(p["log"])
+            except OSError:
+                pass
+    _proc_save()
     return jsonify({"rc": 0})
+
+
+_proc_load()
 
 
 # ---------------- 路由: 数据管理可视化 ----------------

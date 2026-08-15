@@ -162,7 +162,9 @@ tr:hover td { background: #161b22; }
 .procitem .lbl { font-weight: 600; font-size: 13px; }
 .procitem .sub { font-size: 11px; color: #6e7681; font-family: Consolas, monospace; margin-top: 4px; word-break: break-all; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-.dot.running { background: #3fb950; } .dot.exited { background: #6e7681; }
+.dot.running { background: #3fb950; } .dot.exited { background: #6e7681; } .dot.lost { background: #d29922; }
+.procitem.fail { border-color: #f85149; }
+.rcok { color: #3fb950; } .rcbad { color: #f85149; font-weight: 600; } .rcunk { color: #d29922; }
 .proclog { flex: 1; background: #000; border: 1px solid #30363d; border-radius: 8px; padding: 12px;
            overflow: auto; font-family: Consolas, monospace; font-size: 12px; white-space: pre-wrap; margin: 0; }
 

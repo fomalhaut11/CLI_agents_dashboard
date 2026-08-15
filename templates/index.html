@@ -82,7 +82,8 @@
       {% for j in jobs %}<button onclick="startJob({{ j.cmd|tojson }},{{ j.label|tojson }})">{{ j.label }}</button>{% endfor %}
       <input id="customcmd" placeholder="自定义命令 (在选中 worktree 运行)" style="flex:1;min-width:200px">
       <button class="primary" onclick="startCustom()">启动</button>
-      <button onclick="clearProcs()">清理已结束</button>
+      <button onclick="clearProcs(false)">清理已结束</button>
+      <button onclick="if(confirm('清理已结束条目并删除其日志文件?'))clearProcs(true)">清理+删日志</button>
     </div>
     <div class="procmain">
       <div id="proclist" class="proclist"></div>
