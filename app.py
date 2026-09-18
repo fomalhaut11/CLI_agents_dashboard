@@ -12,6 +12,7 @@ import fnmatch
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 
@@ -29,6 +30,7 @@ except Exception:  # noqa: BLE001
     psutil = None
 
 import config as C
+import data_layers as DL
 
 app = Flask(__name__)
 sock = Sock(app)
@@ -80,9 +82,16 @@ def classify_path(branch, f):
     allowed = C.STREAM_FOLDER.get(branch)
     if allowed and f.startswith(allowed + "/"):
         return ("ok", "own", "")
-    # 别的 stream 文件夹
+    # 本 stream 的测试。CLAUDE.md 无条件约束 #6 要求测试一律放 tests/ 下, 与
+    # "新代码只许待在 streams/<line>/" 表面冲突; 约定的实际落法是
+    # tests/streams/<line>/ ---- 守卫此前不认这条, 把合规测试全报成"未归类"。
+    if allowed and f.startswith("tests/" + allowed + "/"):
+        return ("ok", "own_test", "")
+    # 别的 stream 文件夹 (含其测试目录)
     for b, folder in C.STREAM_FOLDER.items():
-        if b != branch and f.startswith(folder + "/"):
+        if b == branch:
+            continue
+        if f.startswith(folder + "/") or f.startswith("tests/" + folder + "/"):
             return ("violation", "wrong_stream", "属于 %s" % b)
     # 因子型 stream: 因子文件 OK
     if branch == C.FACTOR_STREAM:
@@ -95,13 +104,21 @@ def classify_path(branch, f):
     return ("warn", "unclassified", "未归类, 建议放 stream 文件夹")
 
 
+# git 默认对非 ASCII 路径输出 C-quoted 形式: 整个路径被双引号包住, 每个中文字节
+# 写成一个反斜杠八进制转义。一旦带上这层包装, 下面所有 startswith 前缀判定全部失配
+# ---- 于是**凡文件名含中文的都被报成"未归类", 不管放得多正确** (2026-08-31 实测
+# etf-timing 99 条告警里 34 条是这么来的)。core.quotepath=false 让 git 直接吐 UTF-8
+# 原文; strip('"') 留作仍会触发引用的边角情形 (路径含空格或引号)。
+GIT_NOQUOTE = ["-c", "core.quotepath=false"]
+
+
 def guard_report(path, branch):
     """该 worktree 相对 main 的改动 (已提交+工作区) 的约定检查."""
     files = set()
-    rc, out = run_git(path, ["diff", "--name-only", "main...HEAD"])
+    rc, out = run_git(path, GIT_NOQUOTE + ["diff", "--name-only", "main...HEAD"])
     if rc == 0:
-        files.update(l.strip() for l in out.splitlines() if l.strip())
-    rc, out = run_git(path, ["status", "--porcelain=v1"])
+        files.update(l.strip().strip('"') for l in out.splitlines() if l.strip())
+    rc, out = run_git(path, GIT_NOQUOTE + ["status", "--porcelain=v1"])
     if rc == 0:
         for line in out.splitlines():
             if len(line) > 3:
@@ -460,6 +477,20 @@ def _proc_kill_tree(p):
         pass
 
 
+def _child_cmd_env(cmd):
+    """受管进程的解释器与 PATH (2026-09-17). dashboard 由 start.bat 双击启动时 PATH 里没有 python (系统/用户
+    PATH 无 python, 只有 conda 激活注入), 子进程 'python ...' 会报 "不是内部或外部命令"; lineage_pipeline 自己再
+    spawn 的 'python -m ...' 同样死. 处理: 命令首词是裸 python 时换成本进程解释器, 并把解释器目录与 Scripts 前置到 PATH."""
+    exe = sys.executable
+    parts = cmd.strip().split(None, 1)
+    if parts and parts[0].lower() in ("python", "python.exe"):
+        cmd = '"%s"' % exe + (" " + parts[1] if len(parts) > 1 else "")
+    env = dict(os.environ)
+    pdir = os.path.dirname(exe)
+    env["PATH"] = os.pathsep.join([pdir, os.path.join(pdir, "Scripts"), env.get("PATH", "")])
+    return cmd, env
+
+
 def _proc_start(cmd, path, label, force=False):
     if not force:
         dup = [pid for pid, p in sorted(PROCS.items())
@@ -472,8 +503,9 @@ def _proc_start(cmd, path, label, force=False):
     logpath = os.path.join(C.PROC_LOG_DIR, "proc_%d.log" % pid)
     logf = open(logpath, "wb")           # 二进制落盘: 子进程编码原样保留, 读端再猜
     flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)   # 不随 dashboard Ctrl+C 陪葬
-    proc = subprocess.Popen(cmd, cwd=path, shell=True, stdout=logf,
-                            stderr=subprocess.STDOUT, creationflags=flags)
+    cmd_exec, env = _child_cmd_env(cmd)
+    proc = subprocess.Popen(cmd_exec, cwd=path, shell=True, stdout=logf,
+                            stderr=subprocess.STDOUT, creationflags=flags, env=env)
     p = {"label": label, "cmd": cmd, "path": path, "started_ts": time.time(),
          "ended_ts": None, "rc": None, "log": logpath, "os_pid": proc.pid,
          "create_time": None, "proc": proc, "logf": logf, "ps": None, "adopted": False}
@@ -606,21 +638,8 @@ _proc_load()
 
 @app.route("/api/data/overview")
 def api_data_overview():
+    """页面骨架: 三组概览卡 + 目录计数 + store_v2 版本. 明细走 /api/data/layer。"""
     root = C.DATA_ROOT
-    now = time.time()
-    datasets = []
-    for label, rel, max_age in C.KEY_DATASETS:
-        fp = os.path.join(root, rel.replace("/", os.sep))
-        if os.path.exists(fp):
-            st = os.stat(fp)
-            age_d = (now - st.st_mtime) / 86400.0
-            stale = (max_age is not None and age_d > max_age)
-            datasets.append({"label": label, "rel": rel, "exists": True,
-                             "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)),
-                             "age_days": round(age_d, 1), "size_mb": round(st.st_size / 1e6, 1),
-                             "stale": stale, "max_age": max_age})
-        else:
-            datasets.append({"label": label, "rel": rel, "exists": False})
     counts = []
     for label, rel, suf in C.DIR_COUNTS:
         d = os.path.join(root, rel.replace("/", os.sep))
@@ -637,8 +656,36 @@ def api_data_overview():
             version = os.path.basename(tgt.rstrip("\\/"))
     except OSError:
         pass
-    return jsonify({"data_root": root, "datasets": datasets, "counts": counts,
-                    "store_v2_version": version})
+    cache = DL.load_content_cache()
+    return jsonify({"data_root": root, "counts": counts, "store_v2_version": version,
+                    "groups": DL.group_summary(root),
+                    "lineage": DL.lineage_available(),
+                    "content_scanned_at": cache.get("scanned_at", "")})
+
+
+@app.route("/api/data/layer")
+def api_data_layer():
+    """某一组 (external / intermediate / product) 的数据集明细。"""
+    group = request.args.get("group", "external")
+    if group not in {k for k, _ in DL.GROUPS}:
+        return jsonify({"error": "bad group"}), 400
+    return jsonify(DL.overview(C.DATA_ROOT, group))
+
+
+@app.route("/api/data/content-scan", methods=["POST"])
+def api_data_content_scan():
+    """把内容级复检作为 managed process 拉起 (重活不占 web 线程, 日志可查)。"""
+    group = (request.get_json(silent=True) or {}).get("group") or ""
+    cmd = "python tools/stream_dashboard/data_layers.py --scan"
+    label = "数据内容级复检"
+    if group in {k for k, _ in DL.GROUPS}:
+        cmd += " --group " + group
+        label += " " + group
+    pid, dup = _proc_start(cmd, C.REPO_ROOT, label)
+    if pid is None:
+        return jsonify({"rc": 1, "dup": dup,
+                        "out": "复检已在 #%d 运行" % dup}), 409
+    return jsonify({"rc": 0, "id": pid})
 
 
 # ---------------- 会话恢复 (claude 持久化 transcript) ----------------

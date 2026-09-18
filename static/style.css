@@ -170,11 +170,21 @@ tr:hover td { background: #161b22; }
 
 /* data */
 .datahead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.pipepanel { border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; background: #161b22; }
+.pipehead { margin-bottom: 6px; }
+.piperow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.piperow select { max-width: 420px; }
+.pipepreview { font-family: Consolas, monospace; font-size: 11px; color: #8b949e; white-space: pre-wrap; }
 .datahead div { flex: 1; min-width: 260px; }
 .datacards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .datacard { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; }
 .datacard .k { font-size: 11px; color: #8b949e; } .datacard .v { font-size: 18px; font-weight: 600; margin-top: 4px; }
 .fresh { color: #3fb950; } .stale { color: #f85149; } .missing { color: #6e7681; }
+.dim { color: #8b949e; }
+/* 数据页三组切换卡: 外部依赖 / 中间数据 / 最终产物 */
+.groupcard { cursor: pointer; min-width: 150px; transition: border-color .15s, background .15s; }
+.groupcard:hover { border-color: #58a6ff; }
+.groupcard.on { border-color: #58a6ff; background: #1c2431; }
 
 /* modal */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 100; }

@@ -3,14 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <title>Stream Dashboard</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<!-- 前端库本地化 (static/vendor, 取自 npm 包原样): jsdelivr 本机直连 TLS 失败时 xterm/FitAddon
+     未定义, 点「终端」在 makeTerm 抛错且不发 /pty (2026-09-17). 升级版本 = 换文件 + 改这里的文件名. -->
+<link rel="stylesheet" href="/static/vendor/xterm-5.3.0.css">
 <link rel="stylesheet" href="/static/style.css">
-<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+<script src="/static/vendor/xterm-5.3.0.js"></script>
+<script src="/static/vendor/xterm-addon-fit-0.8.0.js"></script>
 <!-- 产出查看: markdown 渲染 + docx 预览 (docx-preview 依赖 jszip) -->
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip/dist/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js"></script>
+<script src="/static/vendor/marked-18.0.13.umd.js"></script>
+<script src="/static/vendor/jszip-3.10.2.min.js"></script>
+<script src="/static/vendor/docx-preview-0.3.2.min.js"></script>
 </head>
 <body>
 <header>

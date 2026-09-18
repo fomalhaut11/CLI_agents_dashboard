@@ -581,7 +581,15 @@ async function loadArtifacts(){
 }
 
 function artRootsForStream(stream){
-  return artRoots.filter(r=>r.stream===stream);
+  const own=artRoots.filter(r=>r.stream===stream);
+  if(stream==="shared") return own;
+  // 共享产出 (docs/reports / docs/experiments / 训练报告) 登记在 stream="shared" 下,
+  // 但任何一条线都可能要看它。以前必须先把上面的 stream 下拉切回 shared 才找得到,
+  // 每次找共享报告都要先想起来切一下。这里把它们追加在本线产出之后, 分组名加
+  // "共享 · " 前缀以便区分; 本线自己的根仍排在前面, 所以默认选中的还是本线的。
+  const shared=artRoots.filter(r=>r.stream==="shared")
+                       .map(r=>Object.assign({}, r, {group:"共享 · "+(r.group||"产出")}));
+  return own.concat(shared);
 }
 function renderArtRootSelect(roots, preferredKey){
   const sel=document.getElementById("artroot");
@@ -696,30 +704,146 @@ async function startManagedProc(cmd,label){
 function startAllDataHealthCheck(){
   startManagedProc("python tools/data_management/scheduled_data_updater.py --data-type all --health-check","data 全量健康检查");
 }
-function startAllDataUpdate(){
+function startLegacyWave0Pull(){
+  // 2026-09-17: 旧入口降级. scheduled_data_updater 现在只是 wave0 的 SQL 拉取件 (被编排器调用), 不判跑不跑、不走门控、不动 wave1-5.
   const cmd="python tools/data_management/scheduled_data_updater.py --data-type all";
-  const msg="确认启动数据全量更新?\\n\\n命令: "+cmd+"\\n\\n这会写入 DATA_ROOT 下的行情/涨跌停/财务/行业/ST/指数等数据, 可能运行较久。不会使用 --force, 会尊重更新时间窗口和增量检查。";
+  const msg="这是旧入口: 只跑 wave0 的 SQL 拉取器 (行情/涨跌停/财务/行业/ST/指数), 不经门控, 不动 wave1-5 的因子/面板/财务/残差。\\n\\n日更请用上面的血缘管线面板。仍要跑旧入口?\\n\\n命令: "+cmd;
   if(!confirm(msg)) return;
-  startManagedProc(cmd,"data 全量更新");
+  startManagedProc(cmd,"旧: wave0 拉取器");
+}
+// ===== 血缘管线 (定稿 2026-09-04, tools/data_management/lineage_pipeline.py) =====
+// 面板状态放模块变量: loadData() 重绘表格时不丢用户的选择
+const PIPE={scope:"all", noHeavy:false, heavyOnly:false, rebuild:false, only:"", skip:""};
+const PIPE_SCOPES=[["all","全部 wave 0-5 (固定日更)"],["0","只跑 wave0 外部源 (SQL/日历/转债/ETF 原始表)"],["1","只跑 wave1 量价主体 (auxiliary/alpha191/HF/技术类)"],["2","只跑 wave2 派生面板 (财务统一/FF3/行业)"],["3","只跑 wave3 财务因子 (PIT 展开)"],["4","只跑 wave4 残差/状态 (Residual/Barra L2/MarketState)"],["5","只跑 wave5 终端 (FactorStore readiness)"],
+  ["from1","从 wave1 起到 5"],["from2","从 wave2 起到 5"],["from3","从 wave3 起到 5"],["from4","从 wave4 起到 5"]];
+function pipeRead(){
+  const g=id=>document.getElementById(id);
+  if(g("pipe-scope")){ PIPE.scope=g("pipe-scope").value; PIPE.noHeavy=g("pipe-noheavy").checked; PIPE.heavyOnly=g("pipe-heavyonly").checked; PIPE.rebuild=g("pipe-rebuild").checked; PIPE.only=g("pipe-only").value.trim(); PIPE.skip=g("pipe-skip").value.trim(); }
+}
+function pipeCmd(execute){
+  pipeRead();
+  let c="python tools/data_management/lineage_pipeline.py";
+  if(PIPE.scope==="all") c+=" --run-all";
+  else if(PIPE.scope.indexOf("from")===0) c+=" --run-all --from-wave "+PIPE.scope.slice(4);
+  else c+=" --run-wave "+PIPE.scope;
+  if(execute) c+=" --execute";
+  if(PIPE.noHeavy) c+=" --no-heavy";
+  if(PIPE.heavyOnly) c+=" --heavy-only --hf-workers 1";
+  if(PIPE.rebuild) c+=" --rebuild";
+  if(PIPE.only) c+=" --only "+PIPE.only;
+  if(PIPE.skip) c+=" --skip "+PIPE.skip;
+  return c;
+}
+function pipePreview(){ const el=document.getElementById("pipe-preview"); if(el) el.textContent=pipeCmd(false)+"   (加 --execute 才写盘)"; }
+function startPipeline(execute){
+  const cmd=pipeCmd(execute);
+  const scope=PIPE_SCOPES.find(s=>s[0]===PIPE.scope); const lab=(execute?"日更执行":"日更计划")+" | "+(scope?scope[1].split(" ")[0]:PIPE.scope);
+  if(execute){
+    const msg="确认真跑血缘管线 (会写 DATA_ROOT)?\\n\\n命令: "+cmd+"\\n\\n顺序: 日历警告 -> 门控 (上游陈旧按受影响命令集拒跑) -> 短路 (全部节点 strict 新鲜才 SKIP) -> 执行 -> 内容终点验收。\\n退出码: 0 全 OK/SKIP (无事日) | 1 FAIL/NOOP/超时 | 2 门控拒跑 | 3 启动对账失败。\\n日志: logs/pipeline_runs/, 进程页可看。\\n读 1min 的重活默认在本次里排队 (信号量 1); 想留给独立终端勾 --no-heavy。"+(PIPE.rebuild?"\\n\\n注意: 勾了 --rebuild = 全量重算口径, 不短路, 耗时按小时计。":"");
+    if(!confirm(msg)) return;
+  }
+  startManagedProc(cmd,lab);
+}
+function startAcceptance(which){
+  if(which==="scan") startManagedProc("python manage.py data scan","验收: data scan (内容终点)");
+  else startManagedProc("python tools/verify_ckpt_days.py --all --days 3","验收: checkpoint 抽日重算");
+}
+function pipePanelHtml(){
+  const opts=PIPE_SCOPES.map(s=>`<option value="${s[0]}"${s[0]===PIPE.scope?" selected":""}>${esc(s[1])}</option>`).join("");
+  const ck=(id,on,lab,title)=>`<label title="${esc(title)}" style="font-size:12px;white-space:nowrap"><input type="checkbox" id="${id}"${on?" checked":""} onchange="pipePreview()"> ${lab}</label>`;
+  return `<div class="pipepanel">
+    <div class="pipehead"><b>血缘管线日更</b> <span style="color:#8b949e;font-size:12px">lineage_pipeline.py: 顺序/命令/预算/归属全部从 config/derived_data.yaml 派生; 先看计划再执行; 跑完做两道验收</span></div>
+    <div class="piperow">
+      <select id="pipe-scope" onchange="pipePreview()">${opts}</select>
+      ${ck("pipe-noheavy",PIPE.noHeavy,"--no-heavy","不跑读 1min 的重活 (留给独立终端)")}
+      ${ck("pipe-heavyonly",PIPE.heavyOnly,"--heavy-only","只跑读 1min 的重活, 并发 1")}
+      ${ck("pipe-rebuild",PIPE.rebuild,"--rebuild","全量重算口径: 不短路, 补历史中段的洞; 耗时按小时计")}
+      <input id="pipe-only" placeholder="--only 子串 (如 etf cb)" value="${esc(PIPE.only)}" oninput="pipePreview()" style="width:150px">
+      <input id="pipe-skip" placeholder="--skip 子串" value="${esc(PIPE.skip)}" oninput="pipePreview()" style="width:120px">
+    </div>
+    <div class="piperow">
+      <button onclick="startPipeline(false)">看计划 (dry-run)</button>
+      <button class="primary" onclick="startPipeline(true)">执行 (--execute)</button>
+      <span style="color:#8b949e;font-size:12px">验收:</span>
+      <button onclick="startAcceptance('scan')">data scan</button>
+      <button onclick="startAcceptance('ckpt')">checkpoint 抽日重算</button>
+      <span style="color:#8b949e;font-size:12px">旧入口:</span>
+      <button onclick="startAllDataHealthCheck()">健康检查</button>
+      <button onclick="startLegacyWave0Pull()">仅 wave0 拉取器</button>
+    </div>
+    <div id="pipe-preview" class="pipepreview"></div>
+  </div>`;
+}
+// 数据页当前子分组: external(外部依赖) / intermediate(中间数据) / product(最终产物)
+let dataGroup="external";
+const DATA_GROUP_HINT={
+  external:"直接连外部世界的数据 (upstream 挂 EXTERNAL:)。这些不更新, 下面两层全部无意义。",
+  intermediate:"清洗层 / 因子层等中间计算物。上游刷新后需重算, 否则出现“文件新、内容旧”。",
+  product:"可消费的最终产物 (FactorStore / ML 输出 / 回测 / 单因子测试结果)。"
+};
+function setDataGroup(g){ dataGroup=g; loadData(); }
+async function startContentScan(){
+  const msg="启动内容级复检 (分组: "+dataGroup+")?\\n\\n会逐个读文件求“内容终点日”, 首次较慢;\\n"
+    +"结果按 (路径,mtime,大小) 缓存, 文件没变的下次直接命中。\\n以 managed process 运行, 可在“进程”页看日志。";
+  if(!confirm(msg)) return;
+  const r=await jpost("/api/data/content-scan",{group:dataGroup});
+  if(r&&r.rc===0){ alert("已启动复检 #"+r.id+", 完成后回本页刷新"); }
+  else { alert((r&&r.out)||"启动失败"); }
+}
+function dataRowsHtml(rows){
+  if(!rows.length) return `<tr><td colspan="7" style="color:#8b949e">本组无数据集</td></tr>`;
+  return rows.map(x=>{
+    const name=`<td title="${esc(x.name)}">${esc(x.name)}</td>`;
+    if(!x.exists) return `<tr>${name}<td class="missing">缺失</td><td></td><td></td><td>${esc(x.frequency||"")}</td><td class="dim">${esc(x.rel)}</td><td class="dim">${esc(x.generator)}</td></tr>`;
+    // 内容日期是真判据; mtime 只提示"有没有人动过", 不作结论
+    let cd=x.content_date;
+    let cdCls="dim", cdTxt="未扫描";
+    if(cd&&String(cd).indexOf("ERR:")===0){ cdCls="missing"; cdTxt="读不出("+esc(cd.slice(4))+")"; }
+    else if(cd){ cdTxt=esc(cd); cdCls=x.content_cached?"":"dim"; }
+    // 扫过但判不出 != 没扫过, 别用同一个留白糊过去
+    else if(x.content_cached){ cdCls="missing"; cdTxt="无日期列"; }
+    const mtCls=x.stale?"stale":"fresh";
+    const mtTxt=(x.max_age==null)?"不判":(x.stale?"静止":"活跃");
+    return `<tr>${name}
+      <td class="${mtCls}" title="mtime 龄 ${x.age_days}d, 阈值 ${x.max_age==null?"无":x.max_age+"d"}">${mtTxt}</td>
+      <td class="${cdCls}">${cdTxt}</td>
+      <td class="dim">${x.mtime} (${x.age_days}d)</td>
+      <td>${esc(x.frequency||"")}</td>
+      <td class="dim">${esc(x.rel)}</td>
+      <td class="dim">${esc(x.generator)}</td></tr>`;
+  }).join("");
 }
 async function loadData(){
   const d=await jget("/api/data/overview");
   const counts=d.counts.map(c=>`<div class="datacard"><div class="k">${esc(c.label)}</div><div class="v">${c.count}</div></div>`).join("");
   const ver=`<div class="datacard"><div class="k">store_v2 激活版本</div><div class="v" style="font-size:14px">${esc(d.store_v2_version||"-")}</div></div>`;
-  const rows=d.datasets.map(x=>{
-    if(!x.exists) return `<tr><td>${esc(x.label)}</td><td class="missing">缺失</td><td>${esc(x.rel)}</td><td></td><td></td></tr>`;
-    const cls=x.stale?"stale":"fresh";
-    return `<tr><td>${esc(x.label)}</td><td class="${cls}">${x.stale?"过期":"新鲜"}</td>
-      <td>${esc(x.rel)}</td><td>${x.mtime} (${x.age_days}d)</td><td>${x.size_mb} MB</td></tr>`;
+  // 可移植版没有 config/derived_data.yaml, 退化成单组 + 只有 mtime 判, 页面照常能开
+  const gsrc=(d.lineage===false)?(d.groups||[]).filter(g=>g.total>0):(d.groups||[]);
+  const gcards=gsrc.map(g=>{
+    const on=(g.key===dataGroup)?" on":"";
+    const bad=g.stale+g.missing;
+    return `<div class="datacard groupcard${on}" onclick="setDataGroup('${g.key}')">
+      <div class="k">${esc(g.label)}</div>
+      <div class="v">${g.total}<span style="font-size:12px;font-weight:400"> 项</span></div>
+      <div style="font-size:11px;margin-top:2px">${bad?`<span class="stale">静止 ${g.stale} / 缺失 ${g.missing}</span>`:`<span class="fresh">全部活跃</span>`}</div>
+    </div>`;
   }).join("");
+  const L=await jget("/api/data/layer?group="+encodeURIComponent(dataGroup));
   document.getElementById("datawrap").innerHTML=`
     <div class="datahead">
-      <div style="color:#8b949e;font-size:12px">data_root: ${esc(d.data_root)}</div>
-      <button onclick="startAllDataHealthCheck()">全量健康检查</button>
-      <button class="primary" onclick="startAllDataUpdate()">全量更新</button>
+      <div style="color:#8b949e;font-size:12px">data_root: ${esc(d.data_root)} &nbsp;|&nbsp; 清单派生自 config/derived_data.yaml (勿手写)</div>
     </div>
+    ${pipePanelHtml()}
+    <div class="datacards">${gcards}</div>
     <div class="datacards">${ver}${counts}</div>
-    <table><tr><th>数据集</th><th>状态</th><th>路径</th><th>最后更新</th><th>大小</th></tr>${rows}</table>`;
+    <div class="datahead">
+      <div style="color:#8b949e;font-size:12px">${esc(DATA_GROUP_HINT[dataGroup]||"")}</div>
+      <button onclick="startContentScan()">内容级复检</button>
+      <span style="color:#8b949e;font-size:12px">内容日期扫描于: ${esc(d.content_scanned_at||"从未")}</span>
+    </div>
+    <table><tr><th>数据集</th><th>mtime 判</th><th>内容终点日</th><th>最后写入</th><th>频率</th><th>路径</th><th>生成器</th></tr>
+      ${dataRowsHtml(L.rows||[])}</table>`;
+  pipePreview();
 }
 
 // ===== 启动 =====
