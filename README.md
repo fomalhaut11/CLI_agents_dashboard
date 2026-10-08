@@ -9,6 +9,7 @@
 ## 功能
 
 - **多 stream 状态板**:每条 stream 一个 git worktree,汇总 git 状态 / 约定守卫(越界改动告警)/ diff / 受控提交。
+  卡片徽章: `clean`/`脏 N` = 工作区未提交文件数; `领先 N` = 本分支有 N 个提交未进 main; `落后 N` = main 有 N 个提交本分支未合入 (worktree 是完整检出, 共享核心是分支快照, 不是实时引用 main)。落后时卡片出现 **同步 main** 按钮 (`POST /api/sync_main` = `git merge main`): 工作区脏则拒绝, 冲突则自动 `merge --abort` 并列出冲突文件, 不会留下半合并状态; main 卡片自身仍用 pull (ff-only 对 origin/main)。
 - **持久多终端**:每个终端一个真实 shell,浏览器刷新/断线不杀会话(进程登记在服务端)。
 - **Claude / Codex 会话恢复 + transcript 查看**:读取结构化会话记录,稳定回看历史,不依赖 TUI 重绘。
 - **产出查看器**:白名单根目录下浏览报告/图表/表格(png/pdf/docx/csv/parquet…),带路径穿越防护。
