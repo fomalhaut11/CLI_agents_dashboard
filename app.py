@@ -216,6 +216,49 @@ def api_git():
     return jsonify({"rc": rc, "out": out})
 
 
+@app.route("/api/sync_main", methods=["POST"])
+def api_sync_main():
+    """一键让 stream 分支跟上 main: git merge main (非 ff).
+
+    保护:
+      - main 自身不允许 (main 该用 pull)
+      - 工作区有未提交改动直接拒绝 (merge 会把脏文件卷进来或中途失败)
+      - 合并冲突时自动 --abort, 把冲突文件列表返回, 让用户去终端处理;
+        worktree 永远不会停留在半合并状态
+    """
+    b = request.get_json(force=True)
+    path = b.get("path")
+    if not path or not os.path.isdir(path):
+        return jsonify({"rc": 1, "out": "无效路径"}), 400
+    rc, branch = run_git(path, ["rev-parse", "--abbrev-ref", "HEAD"])
+    branch = branch.strip()
+    if rc != 0:
+        return jsonify({"rc": rc, "out": branch})
+    if branch == "main":
+        return jsonify({"rc": 1, "out": "main 自身请用 pull (与 origin/main 同步), 不做 merge"})
+    rc, st = run_git(path, ["status", "--porcelain=v1"])
+    dirty = [l for l in st.splitlines() if l.strip()]
+    if dirty:
+        return jsonify({"rc": 1, "out": "工作区有 %d 个未提交改动, 先 commit 或 stash 再同步:\n%s"
+                        % (len(dirty), "\n".join(dirty[:30]))})
+    rc, cnt = run_git(path, ["rev-list", "--left-right", "--count", "main...HEAD"])
+    behind = cnt.split()[0] if rc == 0 and cnt.strip() else "?"
+    if behind == "0":
+        return jsonify({"rc": 0, "out": "已与 main 同步, 无需合并"})
+    rc, out = run_git(path, ["merge", "--no-edit", "main"], timeout=300)
+    if rc == 0:
+        return jsonify({"rc": 0, "out": "已合入 main 的 %s 个提交\n\n%s" % (behind, out)})
+    _, conflicts = run_git(path, ["diff", "--name-only", "--diff-filter=U"])
+    conflicts = [l for l in conflicts.splitlines() if l.strip()]
+    run_git(path, ["merge", "--abort"])
+    msg = ("合并有冲突, 已自动回退 (git merge --abort), worktree 保持合并前状态.\n"
+           "冲突文件 %d 个:\n%s\n\n"
+           "请在终端手工合并: git merge main ; 共享白名单文件取 main 版本 "
+           "(git checkout main -- <path>), 本线文件夹内保留自己的.\n\n--- git 输出 ---\n%s"
+           % (len(conflicts), "\n".join(conflicts[:50]), out))
+    return jsonify({"rc": rc, "out": msg})
+
+
 @app.route("/api/changed")
 def api_changed():
     path = request.args.get("path")

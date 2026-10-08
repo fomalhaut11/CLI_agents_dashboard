@@ -229,6 +229,12 @@ async function addWorktree(){
 }
 async function gitOp(path,action){ const j=await jpost("/api/git",{path,action});
   toast((j.rc===0?"[OK] ":"[rc="+j.rc+"] ")+action+"\n\n"+(j.out||"(无输出)")); refreshStreams(); }
+async function syncMain(path,branch,behind,dirty){
+  if(dirty){ toast("工作区有 "+dirty+" 个未提交改动, 先在终端 commit 或 stash, 再同步 main"); return; }
+  if(!confirm("把 main 最新的 "+behind+" 个提交合并进 "+branch+" ?\n\n无冲突: 直接完成.\n有冲突: 自动回退, 不会留下半合并状态.")) return;
+  toast("正在合并 main -> "+branch+" ...");
+  const j=await jpost("/api/sync_main",{path});
+  toast((j.rc===0?"[OK] ":"[rc="+j.rc+"] ")+"同步 main\n\n"+(j.out||"(无输出)")); refreshStreams(); }
 async function setStatus(branch,status){ await jpost("/api/stream_meta",{branch,status}); refreshStreams(); }
 
 function guardHtml(g){
@@ -258,6 +264,7 @@ function card(s){
       <button onclick="openDiff('${p}','${esc(s.branch)}')">改动${dirty?` (${dirty})`:""}</button>
       <button onclick="gitOp('${p}','fetch')">fetch</button>
       <button onclick="gitOp('${p}','pull')">pull</button>
+      ${s.branch==="main"||!s.behind?"":`<button class="primary" onclick="syncMain('${p}','${esc(s.branch)}',${s.behind},${dirty})">同步 main (${s.behind})</button>`}
       <button onclick="gitOp('${p}','log')">log</button>
     </div></div>`;
 }
