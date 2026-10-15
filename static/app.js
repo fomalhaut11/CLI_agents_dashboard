@@ -841,6 +841,7 @@ async function loadData(){
       <div style="color:#8b949e;font-size:12px">data_root: ${esc(d.data_root)} &nbsp;|&nbsp; 清单派生自 config/derived_data.yaml (勿手写)</div>
     </div>
     ${pipePanelHtml()}
+    <div id="lineagewrap"></div>
     <div class="datacards">${gcards}</div>
     <div class="datacards">${ver}${counts}</div>
     <div class="datahead">
@@ -851,6 +852,7 @@ async function loadData(){
     <table><tr><th>数据集</th><th>mtime 判</th><th>内容终点日</th><th>最后写入</th><th>频率</th><th>路径</th><th>生成器</th></tr>
       ${dataRowsHtml(L.rows||[])}</table>`;
   pipePreview();
+  if(typeof loadLineage==="function") loadLineage();   // 血缘点亮图 (static/lineage.js)
 }
 
 // ===== 启动 =====

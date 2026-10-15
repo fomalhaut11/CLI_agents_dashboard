@@ -19,3 +19,5 @@ stream-dashboard.config.local.json
 .idea/
 .DS_Store
 Thumbs.db
+
+_lineage_snapshot.json

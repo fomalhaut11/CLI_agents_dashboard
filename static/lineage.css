@@ -1,0 +1,39 @@
+/* 数据页: 血缘点亮图 (2026-10-15) */
+.linhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 6px; font-size: 12px; }
+.linhead input[type=text], .linhead input:not([type]) { width: 150px; }
+.linhead label { white-space: nowrap; }
+.linlegend { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; margin-bottom: 8px; }
+.linbody { display: flex; gap: 12px; align-items: flex-start; }
+.lingrid { position: relative; display: flex; gap: 10px; overflow: auto; max-height: 70vh; flex: 1; padding: 4px;
+  background: #0d1117; border: 1px solid #30363d; border-radius: 8px; }
+.linsvg { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 1; }
+.lincol { min-width: 170px; max-width: 220px; flex: 0 0 auto; }
+.lincolhead { font-size: 12px; font-weight: 600; color: #c9d1d9; padding: 4px 6px; position: sticky; top: 0; background: #0d1117; z-index: 2; }
+.lincolbody { display: flex; flex-direction: column; gap: 3px; padding: 2px 4px 8px; }
+.linchip { position: relative; display: inline-block; font-size: 11px; line-height: 16px; padding: 1px 6px 1px 12px; border-radius: 9px;
+  border: 1px solid #30363d; background: #161b22; color: #8b949e; cursor: pointer; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; max-width: 100%; vertical-align: middle; }
+.linchip.ok { background: #133929; color: #3fb950; border-color: #238636; box-shadow: 0 0 6px rgba(63, 185, 80, .45); }
+.linchip.stale { background: #3d2c0a; color: #e3b341; border-color: #9e6a03; }
+.linchip.missing { background: #3d1a1a; color: #f85149; border-color: #b62324; }
+.linchip.frozen { background: #21262d; color: #8b949e; border-color: #30363d; }
+.linchip.unknown { background: #161b22; color: #6e7681; border-style: dashed; }
+.linchip.sel { outline: 2px solid #58a6ff; }
+.linchip.up { outline: 1px solid #79b8ff; }
+.linchip.down { outline: 1px dashed #d2a8ff; }
+.lingrid .linchip:not(.sel):not(.up):not(.down) { opacity: var(--lin-dim, 1); }
+.rundot { position: absolute; left: 3px; top: 5px; width: 6px; height: 6px; border-radius: 50%; border: 1px solid #6e7681; background: transparent; display: inline-block; }
+.linlegend .rundot { position: static; margin: 0 3px 0 6px; }
+.rundot.run-ok { border-color: #3fb950; } .rundot.run-ok.today { background: #3fb950; }
+.rundot.run-skip { border-color: #8b949e; } .rundot.run-skip.today { background: #8b949e; }
+.rundot.run-fail, .rundot.run-timeout, .rundot.run-noop { border-color: #f85149; }
+.rundot.run-fail.today, .rundot.run-timeout.today, .rundot.run-noop.today { background: #f85149; }
+.linedge { fill: none; stroke-width: 1.2; opacity: .9; }
+.linedge.up { stroke: #79b8ff; } .linedge.down { stroke: #d2a8ff; stroke-dasharray: 4 3; }
+.lindetail { width: 380px; flex: 0 0 auto; font-size: 12px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px;
+  max-height: 70vh; overflow: auto; }
+.lindetail div { margin: 3px 0; }
+.lindetail code { font-size: 11px; color: #c9d1d9; word-break: break-all; }
+.lindtitle { margin-bottom: 6px; }
+.lintree { font-size: 11px; line-height: 20px; white-space: nowrap; }
+.lintree .linchip { padding-left: 6px; }

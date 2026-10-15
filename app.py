@@ -731,6 +731,45 @@ def api_data_content_scan():
     return jsonify({"rc": 0, "id": pid})
 
 
+# 血缘点亮图 (2026-10-15): 快照由 lineage_snapshot.py 以 managed process 生成, 页面只读文件。
+# 快照放 dashboard 自己的目录 (同 _data_content_cache.json), 不进 git。
+LINEAGE_SNAPSHOT = getattr(C, "LINEAGE_SNAPSHOT",
+                           os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lineage_snapshot.json"))
+
+
+@app.route("/api/data/lineage")
+def api_data_lineage():
+    """血缘快照 (节点 / wave / 上游 / strict 判定 / 内容终点 / 最近运行)。没有快照时返回 {missing: true}。"""
+    try:
+        with open(LINEAGE_SNAPSHOT, encoding="utf-8") as f:
+            snap = json.load(f)
+    except (OSError, ValueError):
+        return jsonify({"missing": True, "path": LINEAGE_SNAPSHOT})
+    try:
+        snap["snapshot_age_s"] = int(time.time() - os.path.getmtime(LINEAGE_SNAPSHOT))
+    except OSError:
+        pass
+    return jsonify(snap)
+
+
+@app.route("/api/data/lineage/refresh", methods=["POST"])
+def api_data_lineage_refresh():
+    """在指定检出 (日更跑在哪就选哪, 默认主目录) 里重算快照; 重活走 managed process。"""
+    path = (request.get_json(silent=True) or {}).get("path") or C.REPO_ROOT
+    if not os.path.isdir(path):
+        return jsonify({"rc": 1, "out": "路径不存在: %s" % path}), 400
+    # 脚本用 dashboard 自己这份 (目标检出可能还没有它), 血缘/判据/历史则来自 cwd=path 那个检出
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lineage_snapshot.py")
+    cmd = 'python "%s" --out "%s"' % (script.replace("\\", "/"), LINEAGE_SNAPSHOT.replace("\\", "/"))
+    feats = os.path.join(C.REPO_ROOT, "results", "v6.3_specific_return_1d", "models", "round23_meta.json")
+    if os.path.exists(feats):              # 模型特征清单不在 git 里, 目标检出可能没有; 用主目录那份高亮
+        cmd += ' --features "%s"' % feats.replace("\\", "/")
+    pid, dup = _proc_start(cmd, path, "血缘快照 (点亮图) @ " + os.path.basename(path.rstrip("\\/")))
+    if pid is None:
+        return jsonify({"rc": 1, "dup": dup, "out": "快照已在 #%d 生成中" % dup}), 409
+    return jsonify({"rc": 0, "id": pid})
+
+
 # ---------------- 会话恢复 (claude 持久化 transcript) ----------------
 
 USER_HOME = os.path.expanduser("~")
