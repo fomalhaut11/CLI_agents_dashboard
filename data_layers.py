@@ -391,10 +391,49 @@ def scan_content(data_root, group=None, verbose=True, force=False):
     return cache
 
 
+# ---------------- 内容终点判定 (血缘快照) ----------------
+# 2026-10-16: 表格/卡片原先只按 mtime 判, on_demand 节点没有阈值永远"活跃" (10-16 实测漏掉 41 个
+# 内容终点停在 09-18 的节点), 又不认 frozen / REMOTE, 把冻结件报成缺失/静止。现优先采用点亮图同一份
+# 快照 (lineage_snapshot.py, 判据 = core.data_endpoint strict, 同 manage.py data scan); 没有快照
+# (可移植版 / 从未刷新) 才退回 mtime。快照不自动刷新, 页面显示其生成时间。
+LINEAGE_SNAPSHOT = os.path.join(DASH_DIR, "_lineage_snapshot.json")
+JUDGE_STALE = {"STALE", "UNKNOWN", "UNREADABLE", "UNSCANNED", "UNJUDGED"}
+
+
+def load_judge():
+    """{节点名: 快照节点}, 快照生成时间; 没有/读不出快照 -> ({}, "")。"""
+    try:
+        with open(LINEAGE_SNAPSHOT, encoding="utf-8") as f:
+            snap = json.load(f)
+        return {n["name"]: n for n in snap.get("nodes") or [] if n.get("name")}, snap.get("generated_at", "")
+    except (OSError, ValueError, TypeError, KeyError):
+        return {}, ""
+
+
+def _apply_judge(e, judge):
+    j = judge.get(e["name"])
+    if not j:
+        e["judge"] = None
+        return
+    st = j.get("status")
+    e["judge"] = st
+    e["judge_why"] = j.get("why") or ""
+    if j.get("endpoint"):
+        e["content_date"] = j["endpoint"]
+        e["content_cached"] = True
+    e["stale"] = st in JUDGE_STALE
+    e["judge_missing"] = st == "MISSING"
+
+
+def _is_missing(e):
+    return e["judge_missing"] if e.get("judge") else not e["exists"]
+
+
 def overview(data_root, group=None):
-    """页面用: 目录 + mtime 快判 + 缓存里的内容终点日。"""
+    """页面用: 目录 + 内容终点判定 (血缘快照, 无快照时 mtime 快判) + 内容终点日。"""
     cache = load_content_cache()
     entries = cache.get("entries") or {}
+    judge, judged_at = load_judge()
     now = time.time()
     rows = []
     for e in build_catalog(data_root):
@@ -404,20 +443,24 @@ def overview(data_root, group=None):
         c = entries.get(e["abs"]) or {}
         e["content_date"] = c.get("date")
         e["content_cached"] = bool(c) and c.get("key") == _cache_key(e["abs"] or "")
+        _apply_judge(e, judge)
+        e["missing"] = _is_missing(e)
         rows.append(e)
-    return {"rows": rows, "scanned_at": cache.get("scanned_at", "")}
+    return {"rows": rows, "scanned_at": cache.get("scanned_at", ""), "judged_at": judged_at}
 
 
 def group_summary(data_root):
-    """三组的计数/过期数, 给页面顶部的卡片。"""
+    """三组的计数/过期数, 给页面顶部的卡片 (判据同 overview)。"""
     now = time.time()
+    judge, _ = load_judge()
     agg = {k: {"key": k, "label": lbl, "total": 0, "stale": 0, "missing": 0}
            for k, lbl in GROUPS}
     for e in build_catalog(data_root):
         stat_entry(e, now)
+        _apply_judge(e, judge)
         a = agg[e["group"]]
         a["total"] += 1
-        if not e["exists"]:
+        if _is_missing(e):
             a["missing"] += 1
         elif e["stale"]:
             a["stale"] += 1

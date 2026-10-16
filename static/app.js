@@ -801,7 +801,13 @@ function dataRowsHtml(rows){
   if(!rows.length) return `<tr><td colspan="7" style="color:#8b949e">本组无数据集</td></tr>`;
   return rows.map(x=>{
     const name=`<td title="${esc(x.name)}">${esc(x.name)}</td>`;
-    if(!x.exists) return `<tr>${name}<td class="missing">缺失</td><td></td><td></td><td>${esc(x.frequency||"")}</td><td class="dim">${esc(x.rel)}</td><td class="dim">${esc(x.generator)}</td></tr>`;
+    // 有血缘快照判定时以它为准 (内容终点, 认 FROZEN/REMOTE); 否则退回 mtime 快判
+    const J=x.judge, JL={OK:"最新",STALE:"落后",MISSING:"缺失",FROZEN:"冻结",REMOTE:"远程",STATIC:"静态",
+      UNKNOWN:"待查",UNREADABLE:"读不出",UNSCANNED:"未扫描",UNJUDGED:"不判"};
+    const jCls=!J?"":(J==="OK"||J==="FROZEN"||J==="REMOTE"||J==="STATIC")?"fresh":(J==="MISSING"?"missing":"stale");
+    const jTd=J?`<td class="${jCls}" title="${esc(x.judge_why||J)}">${esc(JL[J]||J)}</td>`:"";
+    if(x.missing || (!J && !x.exists)) return `<tr>${name}${jTd||`<td class="missing">缺失</td>`}<td></td><td></td><td>${esc(x.frequency||"")}</td><td class="dim">${esc(x.rel)}</td><td class="dim">${esc(x.generator)}</td></tr>`;
+    if(!x.exists) return `<tr>${name}${jTd}<td class="dim">-</td><td></td><td>${esc(x.frequency||"")}</td><td class="dim">${esc(x.rel)}</td><td class="dim">${esc(x.generator)}</td></tr>`;
     // 内容日期是真判据; mtime 只提示"有没有人动过", 不作结论
     let cd=x.content_date;
     let cdCls="dim", cdTxt="未扫描";
@@ -812,7 +818,7 @@ function dataRowsHtml(rows){
     const mtCls=x.stale?"stale":"fresh";
     const mtTxt=(x.max_age==null)?"不判":(x.stale?"静止":"活跃");
     return `<tr>${name}
-      <td class="${mtCls}" title="mtime 龄 ${x.age_days}d, 阈值 ${x.max_age==null?"无":x.max_age+"d"}">${mtTxt}</td>
+      ${jTd||`<td class="${mtCls}" title="mtime 龄 ${x.age_days}d, 阈值 ${x.max_age==null?"无":x.max_age+"d"}">${mtTxt}</td>`}
       <td class="${cdCls}">${cdTxt}</td>
       <td class="dim">${x.mtime} (${x.age_days}d)</td>
       <td>${esc(x.frequency||"")}</td>
@@ -847,9 +853,9 @@ async function loadData(){
     <div class="datahead">
       <div style="color:#8b949e;font-size:12px">${esc(DATA_GROUP_HINT[dataGroup]||"")}</div>
       <button onclick="startContentScan()">内容级复检</button>
-      <span style="color:#8b949e;font-size:12px">内容日期扫描于: ${esc(d.content_scanned_at||"从未")}</span>
+      <span style="color:#8b949e;font-size:12px">${L.judged_at?`状态/终点取自血缘快照 (内容终点判, 同 data scan), 生成于: ${esc(L.judged_at)} -- 更新后点血缘图"刷新快照"`:`无血缘快照, 状态按 mtime 快判 (不可靠); 内容日期扫描于: ${esc(d.content_scanned_at||"从未")}`}</span>
     </div>
-    <table><tr><th>数据集</th><th>mtime 判</th><th>内容终点日</th><th>最后写入</th><th>频率</th><th>路径</th><th>生成器</th></tr>
+    <table><tr><th>数据集</th><th>${L.judged_at?"状态":"mtime 判"}</th><th>内容终点日</th><th>最后写入</th><th>频率</th><th>路径</th><th>生成器</th></tr>
       ${dataRowsHtml(L.rows||[])}</table>`;
   pipePreview();
   if(typeof loadLineage==="function") loadLineage();   // 血缘点亮图 (static/lineage.js)
