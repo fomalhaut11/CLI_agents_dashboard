@@ -338,7 +338,7 @@ function showRegForm(){
   const el=document.getElementById("regform");
   el.style.display=el.style.display==="none"?"grid":"none";
   el.innerHTML=`
-    <label>stream<select id="rf_stream"><option>etf-timing</option><option>index-enhance</option><option>factor-replicate</option><option>regime-style</option></select></label>
+    <label>stream<select id="rf_stream"><option>etf-timing</option><option>index-enhance</option><option>regime-style</option></select></label>
     <label>日期<input id="rf_date" value="${new Date().toISOString().slice(0,10)}"></label>
     <label class="full">假设 (hypothesis)<input id="rf_hyp"></label>
     <label class="full">kill 准则<input id="rf_kill"></label>
