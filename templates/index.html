@@ -21,6 +21,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="streams" title="基座仓库的 worktree (main + 基座开发分支); 终端区两个页签共用">基座开发</button>
     <button class="tab" data-tab="research" title="独立研究库 (读研究库登记册)">研究</button>
+    <button class="tab" data-tab="knowledge" title="结论 / 复现漏斗 / 因子知识 / 教训 / 待处理 (只读, 读基座台账)">知识</button>
     <button class="tab" data-tab="registry">实验注册表</button>
     <button class="tab" data-tab="procs">进程</button>
     <button class="tab" data-tab="data">数据</button>
@@ -66,6 +67,22 @@
   <div class="right"><div id="research-detail" class="rs-detail">
     <div class="artempty">点研究库卡片的「详情」看 pin / 影响 / 最近提交 / RESEARCH_SUMMARY。终端与会话在「基座开发」页签的终端区打开。</div>
   </div></div>
+</section>
+
+<!-- ===== 知识 (台账只读视图, static/knowledge.js) ===== -->
+<section class="panel" id="tab-knowledge">
+  <div class="kn-wrap">
+    <div class="kn-bar">
+      <button class="kn-sub active" data-kn="conclusions">结论</button>
+      <button class="kn-sub" data-kn="funnel">复现漏斗</button>
+      <button class="kn-sub" data-kn="factors">因子知识</button>
+      <button class="kn-sub" data-kn="lessons">教训</button>
+      <button class="kn-sub" data-kn="pending">待处理</button>
+      <input id="kn-search" placeholder="全局搜索: 结论 / 复现 / 因子 / 教训 / 研报 (回车)">
+      <input id="kn-filter" placeholder="筛选当前表 (任意列包含)">
+    </div>
+    <div class="kn-body"><div id="kn-main" class="kn-main">加载中...</div><div id="kn-detail" class="kn-detail"></div></div>
+  </div>
 </section>
 
 <!-- ===== 实验注册表 ===== -->
@@ -179,5 +196,6 @@
 <script src="/static/app.js"></script>
 <script src="/static/lineage.js"></script>
 <script src="/static/research.js"></script>
+<script src="/static/knowledge.js"></script>
 </body>
 </html>

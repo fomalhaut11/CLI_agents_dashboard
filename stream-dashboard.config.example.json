@@ -58,6 +58,11 @@
   "researchRoot": null,
   "basePinsRoot": null,
   "researchNewCmd": null,
+  "knowledgeRepo": null,
+  "reportCatalog": null,
+  "testResultsDir": null,
+  "researchInbox": null,
+  "_knowledge": "可选: 知识页签 (只读)。knowledgeRepo = 台账所在仓库根 (读 core/research/finding_ledger.jsonl / replication_ledger.jsonl / lessons.jsonl 与 core/factors/meta/factor_registry.json, 跨线请求跑该仓的 tools/harness/requests.py); reportCatalog = 研报库目录 catalog.jsonl; testResultsDir = 单因子测试归档根 (<日期>/<因子名>_...); researchInbox = 结论提案收件箱 (<用户>/*.json)。缺省 null -> 页签空态或该子视图为空。",
   "_research": "可选: 研究页签。researchRegistry = 独立研究库登记册 YAML (repos: {名字: {path, status, base_pin, lineage_nodes, data_namespace}}, path 里可写 ${research_root}); researchRoot = 研究库根; basePinsRoot = 研究库钉住的基座只读检出根 (<根>/<sha>/); researchNewCmd = '+ 新建研究库' 按钮的命令 ({name} 占位, 在 repoRoot 下作为受管进程跑), null 不显示按钮。缺省 null -> 研究页签空态。",
 
   "_dataRoot": "可选: 数据根目录(供 ${DATA_ROOT} 插值与数据面板)。也可用环境变量 DATA_ROOT。",

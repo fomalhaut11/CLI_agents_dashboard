@@ -155,6 +155,18 @@ _pins = _get("basePinsRoot", None)
 BASE_PINS_ROOT = os.path.normpath(_pins) if _pins else None
 RESEARCH_NEW_CMD = _get("researchNewCmd", None)    # "+ 新建研究库" 命令 ({name} 占位), 无则不显示按钮
 
+# 知识页签 (2026-10-26, knowledge.py): 台账所在仓库 (core/research/*.jsonl, core/factors/meta/factor_registry.json)
+# + 研报库目录 catalog.jsonl + 单因子测试归档目录 + 结论收件箱目录; 缺省 None -> 知识页签空态 / 对应子视图为空
+def _opt_path(key):
+    v = _get(key, None)
+    return os.path.normpath(v) if v else None
+
+
+KNOWLEDGE_REPO = _opt_path("knowledgeRepo")
+REPORT_CATALOG = _opt_path("reportCatalog")
+TEST_RESULTS_DIR = _opt_path("testResultsDir")
+RESEARCH_INBOX = _opt_path("researchInbox")
+
 # 数据面板: (标签, 相对 DATA_ROOT 路径, 最大新鲜天数或 None); JSON 里是数组的数组
 KEY_DATASETS = [tuple(x) for x in _get("keyDatasets", [])]
 DIR_COUNTS = [tuple(x) for x in _get("dirCounts", [])]

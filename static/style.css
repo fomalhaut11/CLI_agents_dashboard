@@ -237,3 +237,33 @@ tr:hover td { background: #161b22; }
 .toast { position: fixed; bottom: 16px; right: 16px; max-width: 520px; max-height: 45vh; overflow: auto;
          background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px;
          font-family: Consolas, monospace; font-size: 12px; white-space: pre-wrap; display: none; z-index: 200; }
+
+/* 知识页签 (static/knowledge.js) */
+.kn-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.kn-bar { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid #30363d; flex-wrap: wrap; }
+.kn-sub { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.kn-sub.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.kn-bar input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 4px 8px; }
+#kn-search { width: 300px; margin-left: 16px; }
+#kn-filter { width: 200px; }
+.kn-body { flex: 1; display: flex; min-height: 0; }
+.kn-main { flex: 3; overflow: auto; padding: 10px 12px; }
+.kn-detail { flex: 2; overflow: auto; padding: 10px 14px; border-left: 1px solid #30363d; font-size: 13px; }
+.kn-detail:empty { display: none; }
+.kn-main table tr.kn-row { cursor: pointer; }
+.kn-main table tr.kn-row:hover { background: #161b22; }
+.kn-main th { position: sticky; top: 0; background: #0d1117; cursor: pointer; text-align: left; }
+.kn-funnel { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
+.kn-stage { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+.kn-stage b { display: block; font-size: 18px; color: #c9d1d9; }
+.kn-stage.active { border-color: #1f6feb; }
+.kn-note { color: #8b949e; font-size: 12px; margin: 4px 0 10px; }
+.kn-sec { margin: 14px 0 6px; color: #8b949e; }
+.v-rejected, .v-not_feasible, .v-retracted { color: #f85149; font-weight: bold; }   /* 否决与成立同样醒目 */
+.v-adopted, .v-confirmed { color: #3fb950; font-weight: bold; }
+.v-risk_layer, .v-baseline_only, .v-shadow { color: #58a6ff; font-weight: bold; }
+.v-pending, .v-provisional { color: #e3b341; }
+.v-withdrawn { color: #6e7681; text-decoration: line-through; }
+tr.kn-alarm td { color: #f85149; }
+.kn-detail pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; white-space: pre-wrap; font-size: 12px; }
+.kn-detail img { max-width: 100%; border: 1px solid #30363d; margin: 6px 0; }

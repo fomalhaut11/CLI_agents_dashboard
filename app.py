@@ -31,6 +31,7 @@ except Exception:  # noqa: BLE001
 
 import config as C
 import data_layers as DL
+import knowledge as KN
 
 app = Flask(__name__)
 sock = Sock(app)
@@ -494,6 +495,9 @@ def api_research():
         unregistered = sorted(d for d in os.listdir(root)
                               if os.path.isdir(os.path.join(root, d, ".git")) and _norm(os.path.join(root, d)) not in known)
     rc, main_sha = run_git(C.REPO_ROOT, ["rev-parse", "--short=8", "main"])
+    counts = KN.research_counts(_kn_repo(), getattr(C, "RESEARCH_INBOX", None)) if _kn_repo() else {}
+    for r in repos:     # 已晋升到基座结论台账的现行结论数 / 收件箱排队数 (知识库设计 8 节)
+        r["knowledge"] = counts.get(r["name"]) or {"findings": 0, "queued": 0}
     return jsonify({"repos": repos, "unregistered": unregistered,
                     "configured": bool(getattr(C, "RESEARCH_REGISTRY", None)),
                     "main": main_sha.strip() if rc == 0 else "",
@@ -537,6 +541,62 @@ def api_research_new():
     if not _RESEARCH_NAME_RE.match(name):
         return jsonify({"rc": 1, "out": "名字须是小写字母开头的小写字母/数字/下划线 (2-41 位)"}), 400
     return jsonify({"rc": 0, "cmd": cmd_tpl.format(name=name), "path": C.REPO_ROOT})
+
+
+# ---------------- 路由: 知识 (知识页签, 2026-10-26, 知识库改造第 6 步; 数据层 knowledge.py) ----------------
+# 只读: 结论 / 复现漏斗 / 因子知识 / 教训 / 待处理 / 全局搜索. 写入 (accept / set-state) 仍走基座工具, 页面只给命令.
+
+_REQ_CACHE = {"t": 0.0, "v": None}
+
+
+def _kn_repo():
+    return getattr(C, "KNOWLEDGE_REPO", None)
+
+
+def _kn_requests(repo):
+    """跨线请求要扫 git refs, 60 秒内复用."""
+    if _REQ_CACHE["v"] is None or time.time() - _REQ_CACHE["t"] > 60:
+        _REQ_CACHE["v"] = KN.open_requests(repo)
+        _REQ_CACHE["t"] = time.time()
+    return _REQ_CACHE["v"]
+
+
+@app.route("/api/knowledge/<view>")
+def api_knowledge(view):
+    repo = _kn_repo()
+    if not repo:
+        return jsonify({"configured": False})
+    catalog = getattr(C, "REPORT_CATALOG", None)
+    if view == "conclusions":
+        return jsonify(KN.conclusions(repo, include_history=request.args.get("history") == "1"))
+    if view == "conclusion":
+        d = KN.conclusion_detail(repo, request.args.get("id") or "")
+        return (jsonify(d), 200) if d else (jsonify({"error": "没有这条结论"}), 404)
+    if view == "funnel":
+        return jsonify(KN.funnel(repo, catalog))
+    if view == "factors":
+        return jsonify(KN.factors(repo))
+    if view == "factor_archive":
+        return jsonify({"files": KN.factor_archive(getattr(C, "TEST_RESULTS_DIR", None), request.args.get("name"))})
+    if view == "lessons":
+        return jsonify(KN.lessons(repo))
+    if view == "lesson":
+        d = KN.lesson_detail(repo, request.args.get("id") or "")
+        return (jsonify(d), 200) if d else (jsonify({"error": "没有这条教训"}), 404)
+    if view == "pending":
+        return jsonify(KN.pending(repo, getattr(C, "RESEARCH_INBOX", None), requests_fn=_kn_requests))
+    if view == "search":
+        return jsonify(KN.search(repo, catalog, request.args.get("q") or ""))
+    return jsonify({"error": "未知视图 %s" % view}), 404
+
+
+@app.route("/api/knowledge/archive_file")
+def api_knowledge_archive_file():
+    """单因子测试归档里的文件 (图 / 报告); 只认归档目录内的相对路径."""
+    full = KN.archive_file(getattr(C, "TEST_RESULTS_DIR", None), request.args.get("rel") or "")
+    if not full:
+        return jsonify({"error": "不在归档里"}), 404
+    return send_file(full)
 
 
 # ---------------- 路由: 实验注册表 ----------------

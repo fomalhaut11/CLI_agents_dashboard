@@ -20,6 +20,7 @@ function researchBadges(r){
   if(!r.link_ok) b.push('<span class="badge rs-bad" title="pin 检出里 streams/&lt;名字&gt; 不是指向本库的联接: python tools/research_pin.py prepare &lt;pin&gt; --execute">联接缺</span>');
   if(!r.hook_ok) b.push('<span class="badge rs-bad" title="研究档位门没装: python tools/research_pin.py hook &lt;库&gt; --execute">门缺</span>');
   if(r.registered_pin&&r.pin&&r.registered_pin!==r.pin) b.push('<span class="badge rs-bad" title="登记册 base_pin 与库内 base.pin 不一致">登记册不一致</span>');
+  if(r.knowledge) b.push(`<span class="badge rs-pin" title="已晋升到基座结论台账的现行结论 / 收件箱排队 (知识页签)">结论 ${r.knowledge.findings} · 排队 ${r.knowledge.queued}</span>`);
   if(r.lineage_nodes.length) b.push(`<span class="badge rs-pin" title="${esc(r.lineage_nodes.join(", "))}">血缘节点 ${r.lineage_nodes.length}</span>`);
   return b.join("");
 }
