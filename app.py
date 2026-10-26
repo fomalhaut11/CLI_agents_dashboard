@@ -341,6 +341,204 @@ def api_stream_meta():
     return jsonify({"rc": 0})
 
 
+# ---------------- 路由: 研究库 (研究页签, 2026-10-26) ----------------
+# 读登记册 (C.RESEARCH_REGISTRY, YAML: repos: {名字: {path, status, base_pin, lineage_nodes, data_namespace, ...}}).
+# 研究库 = 独立 git 库, 钉基座某提交 (库根 base.pin); 卡片只算本库的脏 / 提交, pin 落后基座 main 多少是提示不是故障.
+# 影响提示: pin..main 改动的基座文件与本库 import 的基座模块求交集 (o 无交集 / ! 有交集, 需升级并复核).
+# 不提供 "同步 main" (研究库升级 pin 走基座的 tools/research_pin.py upgrade).
+
+_RESEARCH_IMPORTS = {}   # (库路径, HEAD sha) -> 本库 import 的基座模块 (缓存)
+_IMPORT_RE = re.compile(r"^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import\b|import\s+([A-Za-z_][\w.]*))", re.M)
+_RESEARCH_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
+
+
+def _research_registry():
+    path = getattr(C, "RESEARCH_REGISTRY", None)
+    if not path or not os.path.isfile(path):
+        return {}
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            return (yaml.safe_load(f) or {}).get("repos") or {}
+    except Exception:  # noqa: BLE001 -- 没装 pyyaml / 文件坏: 页签空态, 不拖垮面板
+        return {}
+
+
+def _research_path(entry, name):
+    raw = str((entry or {}).get("path") or "")
+    root = getattr(C, "RESEARCH_ROOT", None) or ""
+    if "${research_root}" in raw:
+        if not root:
+            return ""
+        raw = raw.replace("${research_root}", root)
+    return os.path.normpath(raw) if raw else (os.path.join(root, name) if root else "")
+
+
+def _norm(p):
+    p = str(p or "")
+    if p.startswith("\\\\?\\"):
+        p = p[4:]
+    return os.path.normcase(os.path.normpath(p))
+
+
+def _read_pin(repo):
+    try:
+        with open(os.path.join(repo, "base.pin"), encoding="utf-8") as f:
+            return (f.read().split() or [""])[0].strip()
+    except OSError:
+        return ""
+
+
+def _base_imports(repo, head):
+    """本库 .py 里 import 的基座模块 (顶层名在基座仓库里存在、且不是 streams 的)."""
+    key = (repo, head)
+    if key in _RESEARCH_IMPORTS:
+        return _RESEARCH_IMPORTS[key]
+    mods = set()
+    for dp, dn, fn in os.walk(repo):
+        dn[:] = [d for d in dn if d not in (".git", "__pycache__", "node_modules")]
+        for name in fn:
+            if not name.endswith(".py"):
+                continue
+            try:
+                with open(os.path.join(dp, name), encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            for m in _IMPORT_RE.finditer(text):
+                mod = m.group(1) or m.group(2)
+                top = mod.split(".")[0]
+                if top == "streams":
+                    continue
+                if os.path.isdir(os.path.join(C.REPO_ROOT, top)) or os.path.isfile(os.path.join(C.REPO_ROOT, top + ".py")):
+                    mods.add(mod)
+    _RESEARCH_IMPORTS[key] = sorted(mods)
+    return _RESEARCH_IMPORTS[key]
+
+
+def _impact(repo, head, pin):
+    """(pin 落后 main 的提交数, pin..main 改动的基座文件里被本库 import 碰到的 [(模块, 文件)])."""
+    if not pin:
+        return None, []
+    rc, out = run_git(C.REPO_ROOT, ["rev-list", "--count", "%s..main" % pin])
+    behind = int(out.strip()) if rc == 0 and out.strip().isdigit() else None
+    if not behind:
+        return behind, []
+    rc, out = run_git(C.REPO_ROOT, GIT_NOQUOTE + ["diff", "--name-only", pin, "main"])
+    changed = [l.strip().strip('"') for l in out.splitlines() if l.strip()] if rc == 0 else []
+    # 只算 .py: "接口有变" 先用 "被 import 的模块文件有改动" 近似 (设计稿 5.2); config/*.yaml 等数据文件不算
+    hits = []
+    for mod in _base_imports(repo, head):
+        pre = mod.replace(".", "/")
+        for f in changed:
+            if f.endswith(".py") and (f == pre + ".py" or f.startswith(pre + "/")):
+                hits.append((mod, f))
+    return behind, hits
+
+
+def research_info(name, entry):
+    repo = _research_path(entry, name)
+    info = {"name": name, "path": repo, "status": (entry or {}).get("status") or "active",
+            "exists": bool(repo) and os.path.isdir(os.path.join(repo, ".git")),
+            "lineage_nodes": list((entry or {}).get("lineage_nodes") or []),
+            "data_namespace": (entry or {}).get("data_namespace"),
+            "registered_pin": str((entry or {}).get("base_pin") or ""),
+            "staged": 0, "unstaged": 0, "untracked": 0, "branch": "", "commits": [],
+            "pin": "", "pin_behind": None, "impact": [], "link_ok": False, "hook_ok": False}
+    if not info["exists"]:
+        return info
+    rc, out = run_git(repo, ["status", "--porcelain=v1", "-b"])
+    if rc == 0:
+        for line in out.splitlines():
+            if line.startswith("##"):
+                info["branch"] = line[3:].split("...")[0].strip()
+            elif line.startswith("??"):
+                info["untracked"] += 1
+            elif line:
+                info["staged"] += line[0] != " "
+                info["unstaged"] += line[1] != " "
+    rc, out = run_git(repo, ["log", "--format=%h %ad %s", "--date=short", "-5"])
+    info["commits"] = [l for l in out.splitlines() if l.strip()] if rc == 0 else []
+    rc, head = run_git(repo, ["rev-parse", "HEAD"])
+    head = head.strip() if rc == 0 else ""
+    pin = _read_pin(repo)
+    info["pin"] = pin
+    info["pin_behind"], hits = _impact(repo, head, pin)
+    info["impact"] = sorted({m for m, _ in hits})
+    pins_root = getattr(C, "BASE_PINS_ROOT", None)
+    if pins_root and pin:
+        try:
+            tgt = os.readlink(os.path.join(pins_root, pin, "streams", name))
+            info["link_ok"] = _norm(tgt) == _norm(os.path.join(repo, "streams", name))
+        except (OSError, ValueError):
+            info["link_ok"] = False
+    rc, hooks = run_git(repo, ["rev-parse", "--git-path", "hooks"])
+    hp = hooks.strip()
+    hp = hp if os.path.isabs(hp) else os.path.join(repo, hp)
+    try:
+        with open(os.path.join(hp, "pre-commit"), encoding="utf-8", errors="replace") as f:
+            info["hook_ok"] = "# research-gate v1" in f.read()
+    except OSError:
+        info["hook_ok"] = False
+    return info
+
+
+@app.route("/api/research")
+def api_research():
+    reg = _research_registry()
+    repos = [research_info(n, e) for n, e in reg.items()]
+    known = {_norm(r["path"]) for r in repos if r["path"]}
+    root = getattr(C, "RESEARCH_ROOT", None)
+    unregistered = []
+    if root and os.path.isdir(root):
+        unregistered = sorted(d for d in os.listdir(root)
+                              if os.path.isdir(os.path.join(root, d, ".git")) and _norm(os.path.join(root, d)) not in known)
+    rc, main_sha = run_git(C.REPO_ROOT, ["rev-parse", "--short=8", "main"])
+    return jsonify({"repos": repos, "unregistered": unregistered,
+                    "configured": bool(getattr(C, "RESEARCH_REGISTRY", None)),
+                    "main": main_sha.strip() if rc == 0 else "",
+                    "can_create": bool(getattr(C, "RESEARCH_NEW_CMD", None))})
+
+
+@app.route("/api/research/detail")
+def api_research_detail():
+    name = request.args.get("name") or ""
+    reg = _research_registry()
+    if name not in reg:
+        return jsonify({"error": "登记册里没有 %s" % name}), 404
+    info = research_info(name, reg[name])
+    if not info["exists"]:
+        return jsonify(info)
+    rc, out = run_git(info["path"], ["log", "--format=%h %ad %s", "--date=short", "-20"])
+    info["commits"] = [l for l in out.splitlines() if l.strip()] if rc == 0 else []
+    summary = os.path.join(info["path"], "streams", name, "RESEARCH_SUMMARY.md")
+    try:
+        with open(summary, encoding="utf-8", errors="replace") as f:
+            info["summary"] = f.read(200_000)
+    except OSError:
+        info["summary"] = ""
+    rc, head = run_git(info["path"], ["rev-parse", "HEAD"])
+    _, hits = _impact(info["path"], head.strip(), info["pin"])
+    info["impact_files"] = sorted({"%s  <- %s" % (f, m) for m, f in hits})
+    info["pin_log"] = []
+    if info["pin"]:
+        rc, out = run_git(C.REPO_ROOT, ["log", "--format=%h %ad %s", "--date=short", "-30", "%s..main" % info["pin"]])
+        info["pin_log"] = [l for l in out.splitlines() if l.strip()] if rc == 0 else []
+    return jsonify(info)
+
+
+@app.route("/api/research/new", methods=["POST"])
+def api_research_new():
+    """新建研究库: 校验名字后作为受管进程跑 C.RESEARCH_NEW_CMD (cwd = REPO_ROOT), 日志在进程页."""
+    cmd_tpl = getattr(C, "RESEARCH_NEW_CMD", None)
+    name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+    if not cmd_tpl:
+        return jsonify({"rc": 1, "out": "本面板未配置新建研究库命令"}), 400
+    if not _RESEARCH_NAME_RE.match(name):
+        return jsonify({"rc": 1, "out": "名字须是小写字母开头的小写字母/数字/下划线 (2-41 位)"}), 400
+    return jsonify({"rc": 0, "cmd": cmd_tpl.format(name=name), "path": C.REPO_ROOT})
+
+
 # ---------------- 路由: 实验注册表 ----------------
 
 @app.route("/api/registry", methods=["GET"])

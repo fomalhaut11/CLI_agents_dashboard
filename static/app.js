@@ -15,6 +15,7 @@ document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
   if(t.dataset.tab==="data") loadData();
   if(t.dataset.tab==="artifacts") loadArtifacts();
   if(t.dataset.tab==="agents") loadAgents();
+  if(t.dataset.tab==="research" && typeof loadResearch==="function") loadResearch();   // static/research.js
   if(t.dataset.tab==="streams"){ fitAndResize(TERMS.get(activeTid),false); refreshTermStatus(); }
 });
 

@@ -145,6 +145,16 @@ QUICK_COMMANDS = _get("quickCommands", [           # 通用 git 默认; 项目�
 ])
 JOB_COMMANDS = _get("jobCommands", [])             # 作业型命令(受管进程), 无则空
 
+# 研究页签 (2026-10-26): 独立研究库登记册 (YAML, repos: {名字: {path, status, base_pin, ...}}) +
+# 研究库根 (插值 path 里的 ${research_root}) + pin 检出根; 缺省 None -> 研究页签空态
+_rr = _get("researchRegistry", None)
+RESEARCH_REGISTRY = os.path.normpath(_rr) if _rr else None
+_rroot = _get("researchRoot", None)
+RESEARCH_ROOT = os.path.normpath(_rroot) if _rroot else None
+_pins = _get("basePinsRoot", None)
+BASE_PINS_ROOT = os.path.normpath(_pins) if _pins else None
+RESEARCH_NEW_CMD = _get("researchNewCmd", None)    # "+ 新建研究库" 命令 ({name} 占位), 无则不显示按钮
+
 # 数据面板: (标签, 相对 DATA_ROOT 路径, 最大新鲜天数或 None); JSON 里是数组的数组
 KEY_DATASETS = [tuple(x) for x in _get("keyDatasets", [])]
 DIR_COUNTS = [tuple(x) for x in _get("dirCounts", [])]

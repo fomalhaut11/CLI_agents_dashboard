@@ -54,6 +54,12 @@
     }
   },
 
+  "researchRegistry": null,
+  "researchRoot": null,
+  "basePinsRoot": null,
+  "researchNewCmd": null,
+  "_research": "可选: 研究页签。researchRegistry = 独立研究库登记册 YAML (repos: {名字: {path, status, base_pin, lineage_nodes, data_namespace}}, path 里可写 ${research_root}); researchRoot = 研究库根; basePinsRoot = 研究库钉住的基座只读检出根 (<根>/<sha>/); researchNewCmd = '+ 新建研究库' 按钮的命令 ({name} 占位, 在 repoRoot 下作为受管进程跑), null 不显示按钮。缺省 null -> 研究页签空态。",
+
   "_dataRoot": "可选: 数据根目录(供 ${DATA_ROOT} 插值与数据面板)。也可用环境变量 DATA_ROOT。",
   "keyDatasets": [],
   "_keyDatasets": "数据面板关注的数据集: [标签, 相对 DATA_ROOT 路径, 最大新鲜天数(null=不判)]。",

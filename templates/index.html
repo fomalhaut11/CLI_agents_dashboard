@@ -19,7 +19,8 @@
 <header>
   <h1>Stream Dashboard</h1>
   <nav class="tabs">
-    <button class="tab active" data-tab="streams">Streams</button>
+    <button class="tab active" data-tab="streams" title="基座仓库的 worktree (main + 基座开发分支); 终端区两个页签共用">基座开发</button>
+    <button class="tab" data-tab="research" title="独立研究库 (读研究库登记册)">研究</button>
     <button class="tab" data-tab="registry">实验注册表</button>
     <button class="tab" data-tab="procs">进程</button>
     <button class="tab" data-tab="data">数据</button>
@@ -57,6 +58,14 @@
     </div>
     <div id="termpanes" class="termpanes"></div>
   </div>
+</section>
+
+<!-- ===== 研究 (独立研究库, static/research.js) ===== -->
+<section class="panel" id="tab-research">
+  <div class="left"><div id="research-cards">加载中...</div></div>
+  <div class="right"><div id="research-detail" class="rs-detail">
+    <div class="artempty">点研究库卡片的「详情」看 pin / 影响 / 最近提交 / RESEARCH_SUMMARY。终端与会话在「基座开发」页签的终端区打开。</div>
+  </div></div>
 </section>
 
 <!-- ===== 实验注册表 ===== -->
@@ -169,5 +178,6 @@
 <div class="toast" id="toast" onclick="this.style.display='none'"></div>
 <script src="/static/app.js"></script>
 <script src="/static/lineage.js"></script>
+<script src="/static/research.js"></script>
 </body>
 </html>
