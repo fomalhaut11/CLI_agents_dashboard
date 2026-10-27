@@ -154,7 +154,8 @@ async function loadPromoBar(refresh){
     const d=await jget("/api/promotion"+(refresh?"?refresh=1":""));
     bar.className="wipbar"+(d.n_overdue?" warn":"");
     bar.innerHTML=`晋升队列: 晋升 ${d.n_promote} · 未结请求共 ${d.queue.length} (研究库 ${d.n_research}${d.n_overdue?" · 超期 "+d.n_overdue:""})
-      <button onclick="openPromo()">查看</button>`+(d.error?` <span title="${esc(d.error)}">台账读不了</span>`:"");
+      <button onclick="openPromo()">查看</button> <button onclick="openOverview()" title="pin 分布 + 影响预览">基座总览</button>`+
+      (d.error?` <span title="${esc(d.error)}">台账读不了</span>`:"");
   }catch(e){ bar.textContent="晋升队列读不了: "+e; }
 }
 async function openPromo(){
@@ -166,6 +167,44 @@ async function openPromo(){
   body.innerHTML=(d.error?`<div class="wipbar warn">${esc(d.error)}</div>`:"")+
     '<div class="rs-hint">处理在基座 main 的 worktree 里做 (页面不写台账): ack -> 开 worktree 按契约落地 (测试 / 血缘 / 前视审计 / 门) -> --ff-only 进 main -> close 引用落地提交。设计稿 research_repos_design 4.4 / 5.5。</div>'+
     reqTable(d.queue, true);
+}
+// ===== 基座总览 (2026-10-27, 设计稿 5.5): pin 分布 + 影响预览 =====
+// pin 分布: 各研究库钉的基座提交 / 落后 main / 过旧高亮; 影响预览: main 上某次提交或某 worktree 未进 main 的改动
+// 碰到了哪些研究库 import 的模块 (只算 .py, 与研究卡片的影响提示同判据)
+async function openOverview(){
+  const m=document.getElementById("overviewmodal");
+  m.style.display="flex";
+  const body=document.getElementById("overviewbody");
+  body.innerHTML="加载中...";
+  const d=await jget("/api/base_overview");
+  const pinRows=d.pins.map(p=>`<tr class="${p.stale?"rq-overdue":""}"><td>${esc(p.name)}</td>
+    <td>${p.exists?`<code>${esc((p.pin||"").slice(0,8))}</code>`:"本机无"}</td><td>${esc(p.pin_date||"")}</td>
+    <td>${p.behind==null?"":p.behind}</td><td>${p.age_days==null?"":p.age_days+"d"}</td>
+    <td>${p.stale?"过旧":""}${p.registered_pin&&p.pin&&p.registered_pin!==p.pin?" 登记册不一致":""}${p.status!=="active"?" "+esc(p.status):""}</td></tr>`).join("");
+  const groups=d.pin_groups.map(g=>`<code>${esc(g.pin.slice(0,8))}</code>: ${g.repos.map(esc).join(", ")}`).join(" · ");
+  const opts=d.commits.map(c=>`<option value="rev:${esc(c.sha)}">${esc(c.sha.slice(0,8))} ${esc(c.date)} ${esc(c.subject.slice(0,70))}</option>`).join("")+
+    d.worktrees.map(w=>`<option value="path:${esc(w.path)}">worktree ${esc(w.branch)} (${esc(w.path)}) 未进 main 的改动</option>`).join("");
+  body.innerHTML=`<div class="rs-meta">基座 main ${esc(d.main)}${d.main_dirty?` · main 检出有 ${d.main_dirty} 个未提交文件`:" · main 检出干净"}</div>
+    <h4>pin 分布 (过旧 = 落后 main &gt; ${d.stale_commits} 个提交或 &gt; ${d.stale_days} 天)</h4>
+    <div class="rs-hint">${groups||"没有研究库"}</div>
+    <table class="rq-table"><tr><th>研究库</th><th>pin</th><th>pin 日期</th><th>落后 main</th><th>pin 天数</th><th></th></tr>${pinRows}</table>
+    <h4>影响预览: 这次改动会碰到哪些研究库</h4>
+    <div class="rq-form"><label>改动 <select id="ov-src">${opts}</select></label>
+      <div><button class="primary" onclick="runImpact()">预览</button></div></div>
+    <div id="ov-impact"></div>`;
+}
+async function runImpact(){
+  const v=document.getElementById("ov-src").value;
+  const box=document.getElementById("ov-impact");
+  box.innerHTML="计算中...";
+  const q=v.startsWith("rev:")?"rev="+encodeURIComponent(v.slice(4)):"path="+encodeURIComponent(v.slice(5));
+  const d=await jget("/api/impact_preview?"+q);
+  if(d.error){ box.innerHTML=`<div class="wipbar warn">${esc(d.error)}</div>`; return; }
+  const rows=d.repos.map(r=>`<tr class="${r.hits.length?"rq-overdue":""}"><td>${esc(r.name)}</td>
+    <td>${r.hits.length?"! "+r.hits.length:"o"}</td><td>${r.hits.length?`<pre class="rs-pre">${r.hits.map(esc).join("\n")}</pre>`:"没碰到本库 import 的模块"}</td></tr>`).join("");
+  box.innerHTML=`<div class="rs-hint">${esc(d.label)}: 改了 ${d.changed.length} 个文件 (.py ${d.n_py}); 受影响研究库 ${d.affected.length?d.affected.map(esc).join(", "):"无"}。
+    判据: 被改的 .py 是研究库 import 的基座模块 (或其包下文件); 只是近似, 不看改的是不是接口。</div>
+    <table class="rq-table"><tr><th>研究库</th><th>影响</th><th>改到的文件 &lt;- 本库 import 的模块</th></tr>${rows}</table>`;
 }
 setInterval(()=>{ if(document.getElementById("tab-streams").classList.contains("active")) loadPromoBar(); },60000);
 loadPromoBar();

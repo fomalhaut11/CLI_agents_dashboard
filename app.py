@@ -427,14 +427,19 @@ def _impact(repo, head, pin):
         return behind, []
     rc, out = run_git(C.REPO_ROOT, GIT_NOQUOTE + ["diff", "--name-only", pin, "main"])
     changed = [l.strip().strip('"') for l in out.splitlines() if l.strip()] if rc == 0 else []
-    # 只算 .py: "接口有变" 先用 "被 import 的模块文件有改动" 近似 (设计稿 5.2); config/*.yaml 等数据文件不算
+    return behind, _import_hits(repo, head, changed)
+
+
+def _import_hits(repo, head, changed):
+    """改动的基座文件里被本库 import 碰到的 [(模块, 文件)] (研究卡片影响提示与基座总览影响预览共用).
+    只算 .py: "接口有变" 先用 "被 import 的模块文件有改动" 近似 (设计稿 5.2); config/*.yaml 等数据文件不算."""
     hits = []
     for mod in _base_imports(repo, head):
         pre = mod.replace(".", "/")
         for f in changed:
             if f.endswith(".py") and (f == pre + ".py" or f.startswith(pre + "/")):
                 hits.append((mod, f))
-    return behind, hits
+    return hits
 
 
 def research_info(name, entry):
@@ -546,6 +551,106 @@ def api_research_new():
     if not _RESEARCH_NAME_RE.match(name):
         return jsonify({"rc": 1, "out": "名字须是小写字母开头的小写字母/数字/下划线 (2-41 位)"}), 400
     return jsonify({"rc": 0, "cmd": cmd_tpl.format(name=name), "path": C.REPO_ROOT})
+
+
+# ---------------- 路由: 基座总览 (2026-10-27; 设计稿 research_repos_design 5.5) ----------------
+# pin 分布: 各研究库钉在哪个基座提交, 落后 main 多少, 过旧高亮 (落后 > PIN_STALE_COMMITS 个提交或 > PIN_STALE_DAYS 天).
+# 影响预览: 选 main 上某次提交, 或某个基座 worktree 还没进 main 的改动 (main...HEAD + 未提交), 列出 import 了被改
+# 模块的研究库 -- 基座开发者合并前就知道会影响谁. 判据同研究卡片的影响提示 (_import_hits, 只算 .py).
+
+PIN_STALE_COMMITS = 50
+PIN_STALE_DAYS = 30
+_SHA_ARG_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _research_repos_here():
+    """[(名字, 路径, HEAD)] -- 登记册里本机有的研究库."""
+    out = []
+    for name, entry in _research_registry().items():
+        repo = _research_path(entry, name)
+        if repo and os.path.isdir(os.path.join(repo, ".git")):
+            rc, head = run_git(repo, ["rev-parse", "HEAD"])
+            out.append((name, repo, head.strip() if rc == 0 else ""))
+    return out
+
+
+@app.route("/api/base_overview")
+def api_base_overview():
+    rc, main_line = run_git(C.REPO_ROOT, ["log", "-1", "--format=%h %cs %s", "main"])
+    rc2, st = run_git(C.REPO_ROOT, ["status", "--porcelain=v1"])
+    dirty = [l for l in st.splitlines() if l.strip()] if rc2 == 0 else []
+    pins = []
+    for name, entry in _research_registry().items():
+        repo = _research_path(entry, name)
+        exists = bool(repo) and os.path.isdir(os.path.join(repo, ".git"))
+        pin = _read_pin(repo) if exists else ""
+        row = {"name": name, "exists": exists, "pin": pin, "registered_pin": str((entry or {}).get("base_pin") or ""),
+               "status": (entry or {}).get("status") or "active", "pin_date": "", "behind": None, "age_days": None,
+               "stale": False}
+        if pin:
+            r1, d = run_git(C.REPO_ROOT, ["show", "-s", "--format=%cs", pin])
+            row["pin_date"] = d.strip() if r1 == 0 else ""
+            r2, n = run_git(C.REPO_ROOT, ["rev-list", "--count", "%s..main" % pin])
+            row["behind"] = int(n.strip()) if r2 == 0 and n.strip().isdigit() else None
+            try:
+                row["age_days"] = (time.time() - time.mktime(time.strptime(row["pin_date"], "%Y-%m-%d"))) // 86400
+            except ValueError:
+                pass
+            row["stale"] = (row["behind"] or 0) > PIN_STALE_COMMITS or (row["age_days"] or 0) > PIN_STALE_DAYS
+        pins.append(row)
+    groups = {}
+    for p in pins:
+        if p["pin"]:
+            groups.setdefault(p["pin"], []).append(p["name"])
+    rc3, log = run_git(C.REPO_ROOT, ["log", "--format=%H %cs %s", "-30", "main"])
+    commits = [{"sha": l[:40], "date": l[41:51], "subject": l[52:]} for l in log.splitlines() if len(l) > 52] \
+        if rc3 == 0 else []
+    pins_root = _norm(getattr(C, "BASE_PINS_ROOT", None) or "\0")     # pin 检出也是基座 worktree, 但不是开发线
+    wts = [{"path": t.get("path"), "branch": t.get("branch") or "(detached)"} for t in list_worktrees()
+           if _norm(t.get("path")) != _norm(C.REPO_ROOT) and not _norm(t.get("path")).startswith(pins_root)]
+    return jsonify({"main": main_line.strip() if rc == 0 else "", "main_dirty": len(dirty),
+                    "pins": pins, "pin_groups": [{"pin": k, "repos": v} for k, v in groups.items()],
+                    "stale_commits": PIN_STALE_COMMITS, "stale_days": PIN_STALE_DAYS,
+                    "commits": commits, "worktrees": wts})
+
+
+def _changed_files(rev=None, path=None):
+    """(改动的基座文件, 说明). rev: main 上某次提交 (rev^..rev); path: 某个基座 worktree 未进 main 的改动."""
+    if rev:
+        if not _SHA_ARG_RE.match(rev):
+            return None, "rev 须是提交号"
+        rc, out = run_git(C.REPO_ROOT, GIT_NOQUOTE + ["show", "--name-only", "--format=", rev])
+        if rc != 0:
+            return None, "找不到提交 %s" % rev
+        return [l.strip() for l in out.splitlines() if l.strip()], "提交 %s" % rev[:8]
+    if path:
+        known = {_norm(t.get("path")): t for t in list_worktrees()}
+        if _norm(path) not in known:
+            return None, "不是基座的 worktree: %s" % path
+        files = set()
+        rc, out = run_git(path, GIT_NOQUOTE + ["diff", "--name-only", "main...HEAD"])
+        files.update(l.strip() for l in out.splitlines() if l.strip() and rc == 0)
+        rc, out = run_git(path, GIT_NOQUOTE + ["status", "--porcelain=v1"])
+        for l in out.splitlines() if rc == 0 else []:
+            if len(l) > 3:
+                files.add(l[3:].split(" -> ")[-1].strip().strip('"'))
+        return sorted(files), "worktree %s 未进 main 的改动 (提交 + 未提交)" % path
+    return None, "给 rev 或 path"
+
+
+@app.route("/api/impact_preview")
+def api_impact_preview():
+    changed, label = _changed_files(request.args.get("rev") or None, request.args.get("path") or None)
+    if changed is None:
+        return jsonify({"error": label}), 400
+    py = [f for f in changed if f.endswith(".py")]
+    repos = []
+    for name, repo, head in _research_repos_here():
+        hits = _import_hits(repo, head, py)
+        repos.append({"name": name, "hits": sorted({"%s  <- %s" % (f, m) for m, f in hits})})
+    repos.sort(key=lambda r: (-len(r["hits"]), r["name"]))
+    return jsonify({"label": label, "changed": changed, "n_py": len(py), "repos": repos,
+                    "affected": [r["name"] for r in repos if r["hits"]]})
 
 
 # ---------------- 路由: 晋升队列 (2026-10-27, H-106; 设计稿 research_repos_design 4.4 / 5.4 / 5.5) ----------------

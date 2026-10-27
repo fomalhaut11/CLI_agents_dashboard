@@ -204,6 +204,17 @@
   </div>
 </div>
 
+<!-- 基座总览模态: pin 分布 + 影响预览 (static/research.js) -->
+<div class="modal" id="overviewmodal" style="display:none">
+  <div class="modalbox">
+    <div class="modalhead">
+      <span>基座总览 (pin 分布 / 影响预览)</span>
+      <button onclick="document.getElementById('overviewmodal').style.display='none'">关闭</button>
+    </div>
+    <div class="modalbody rq-body" id="overviewbody"></div>
+  </div>
+</div>
+
 <div class="toast" id="toast" onclick="this.style.display='none'"></div>
 <script src="/static/app.js"></script>
 <script src="/static/lineage.js"></script>
