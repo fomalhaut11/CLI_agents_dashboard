@@ -21,6 +21,8 @@ function researchBadges(r){
   if(!r.hook_ok) b.push('<span class="badge rs-bad" title="研究档位门没装: python tools/research_pin.py hook &lt;库&gt; --execute">门缺</span>');
   if(r.registered_pin&&r.pin&&r.registered_pin!==r.pin) b.push('<span class="badge rs-bad" title="登记册 base_pin 与库内 base.pin 不一致">登记册不一致</span>');
   if(r.knowledge) b.push(`<span class="badge rs-pin" title="已晋升到基座结论台账的现行结论 / 收件箱排队 (知识页签)">结论 ${r.knowledge.findings} · 排队 ${r.knowledge.queued}</span>`);
+  const ro=r.requests_open;
+  if(ro&&(ro.promote||ro.other)) b.push(`<span class="badge rs-behind" title="本库提给基座、仍未结的请求 (跨线请求台账; 基座开发页签的晋升队列)">晋升 ${ro.promote}${ro.other?" · 请求 "+ro.other:""}</span>`);
   if(r.lineage_nodes.length) b.push(`<span class="badge rs-pin" title="${esc(r.lineage_nodes.join(", "))}">血缘节点 ${r.lineage_nodes.length}</span>`);
   return b.join("");
 }
@@ -88,10 +90,85 @@ async function researchDetail(name){
     <div class="rs-meta">base.pin <code>${esc(r.pin)}</code> · 数据命名空间 <code>${esc(r.data_namespace||"-")}</code>
       ${r.lineage_nodes.length?" · 血缘节点 "+r.lineage_nodes.map(esc).join(", "):""}</div>
     ${pinHint}${impact}
+    <h4>晋升与请求 <button onclick="promoteForm('${esc(name)}')">发起晋升</button></h4>
+    <div id="rs-promote-form"></div><div id="rs-requests">加载中...</div>
     <h4>最近提交</h4><pre class="rs-pre">${r.commits.map(esc).join("\n")}</pre>
     ${pinLog}
     <h4>RESEARCH_SUMMARY</h4><div class="rs-summary md">${summary}</div>`;
+  loadResearchRequests(name);
 }
+
+// ===== 晋升 (2026-10-27, H-106): 研究库发起 -> 基座跨线请求台账 (kind=promote) -> 基座开发页签的晋升队列 =====
+function reqRow(q, withLand){
+  const promo=q.kind==="promote";
+  const land=withLand&&q.land ? `<pre class="rs-pre">${q.land.map(esc).join("\n")}</pre>` : "";
+  return `<tr class="${q.overdue?"rq-overdue":""}"><td><code>${esc(q.id)}</code></td><td>${esc(q.from)}</td>
+    <td>${esc(q.kind)}${promo&&q.artifact?" / "+esc(q.artifact):""}</td><td>${esc(q.status)}</td>
+    <td>${q.age_days}d${q.overdue?" 超期":""}</td>
+    <td>${esc(q.title)}${promo&&q.target?`<div class="rs-sub">落点 ${esc(q.target)}</div>`:""}
+      <div class="rs-sub">依据 ${esc(q.evidence_ref||"")}</div>${land}</td></tr>`;
+}
+function reqTable(rows, withLand){
+  if(!rows.length) return '<div class="artempty">没有</div>';
+  return `<table class="rq-table"><tr><th>id</th><th>来自</th><th>类型</th><th>状态</th><th>等待</th><th>标题 / 落点 / 依据</th></tr>${
+    rows.map(q=>reqRow(q,withLand)).join("")}</table>`;
+}
+async function loadResearchRequests(name, refresh){
+  const box=document.getElementById("rs-requests");
+  if(!box) return;
+  const d=await jget("/api/research/requests?name="+encodeURIComponent(name)+(refresh?"&refresh=1":""));
+  box.innerHTML=(d.error?`<div class="wipbar warn">${esc(d.error)}</div>`:"")+reqTable(d.requests||[], false)+
+    '<div class="rs-hint">请求 = 本库 main 上提交的 requests/'+esc(name)+'.jsonl; 基座 main 处理 (ack / close / decline)。撤回: 本库里 <code>python &lt;基座&gt;/tools/harness/requests.py withdraw &lt;id&gt; --reason "..."</code> 后提交。</div>';
+}
+function promoteForm(name){
+  const box=document.getElementById("rs-promote-form");
+  const opts=["factor","dataset","tool","finding","signal","other"].map(a=>`<option>${a}</option>`).join("");
+  box.innerHTML=`<div class="rq-form">
+    <label>成果类型 <select id="pf-artifact">${opts}</select></label>
+    <label>基座落点 <input id="pf-target" placeholder="factors/repository/technical/ 或 config/derived_data.yaml"></label>
+    <label>标题 <input id="pf-title" placeholder="一句话: 晋升什么"></label>
+    <label>依据 <input id="pf-evidence" placeholder="库内路径 / 报告 / 提交 (成果与证据在哪)"></label>
+    <label>涉及路径 <input id="pf-paths" placeholder="可选, 逗号分隔 (库内路径)"></label>
+    <div><button class="primary" onclick="promoteSubmit('${esc(name)}')">写请求并提交到本库</button>
+      <button onclick="document.getElementById('rs-promote-form').innerHTML=''">取消</button></div>
+    <div class="rs-hint">只写并提交本库的 requests/${esc(name)}.jsonl (须在本库 main 分支上), 不改基座; 落地由基座在 worktree 里按契约做。</div></div>`;
+}
+async function promoteSubmit(name){
+  const v=id=>(document.getElementById(id).value||"").trim();
+  const body={name, artifact:v("pf-artifact"), target:v("pf-target"), title:v("pf-title"), evidence:v("pf-evidence"),
+    paths:v("pf-paths").split(",").map(s=>s.trim()).filter(Boolean)};
+  if(!body.target||!body.title||!body.evidence){ toast("落点 / 标题 / 依据 都要填"); return; }
+  const j=await jpost("/api/research/promote", body);
+  if(j.rc!==0){ toast(j.out||"失败"); return; }
+  toast("已提交晋升请求 "+j.id);
+  document.getElementById("rs-promote-form").innerHTML="";
+  loadResearchRequests(name, true);
+  loadPromoBar(true);
+}
+
+// 基座开发页签顶部: 晋升队列计数 + 模态 (全部研究库的未结请求, 晋升优先, 再按等待天数)
+async function loadPromoBar(refresh){
+  const bar=document.getElementById("promobar");
+  if(!bar) return;
+  try{
+    const d=await jget("/api/promotion"+(refresh?"?refresh=1":""));
+    bar.className="wipbar"+(d.n_overdue?" warn":"");
+    bar.innerHTML=`晋升队列: 晋升 ${d.n_promote} · 未结请求共 ${d.queue.length} (研究库 ${d.n_research}${d.n_overdue?" · 超期 "+d.n_overdue:""})
+      <button onclick="openPromo()">查看</button>`+(d.error?` <span title="${esc(d.error)}">台账读不了</span>`:"");
+  }catch(e){ bar.textContent="晋升队列读不了: "+e; }
+}
+async function openPromo(){
+  const m=document.getElementById("promomodal");
+  m.style.display="flex";
+  const body=document.getElementById("promobody");
+  body.innerHTML="加载中...";
+  const d=await jget("/api/promotion?refresh=1");
+  body.innerHTML=(d.error?`<div class="wipbar warn">${esc(d.error)}</div>`:"")+
+    '<div class="rs-hint">处理在基座 main 的 worktree 里做 (页面不写台账): ack -> 开 worktree 按契约落地 (测试 / 血缘 / 前视审计 / 门) -> --ff-only 进 main -> close 引用落地提交。设计稿 research_repos_design 4.4 / 5.5。</div>'+
+    reqTable(d.queue, true);
+}
+setInterval(()=>{ if(document.getElementById("tab-streams").classList.contains("active")) loadPromoBar(); },60000);
+loadPromoBar();
 
 async function researchNew(){
   const name=(prompt("新研究库名 (小写字母开头, 小写字母/数字/下划线):")||"").trim();

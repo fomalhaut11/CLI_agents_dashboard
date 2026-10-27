@@ -496,8 +496,13 @@ def api_research():
                               if os.path.isdir(os.path.join(root, d, ".git")) and _norm(os.path.join(root, d)) not in known)
     rc, main_sha = run_git(C.REPO_ROOT, ["rev-parse", "--short=8", "main"])
     counts = KN.research_counts(_kn_repo(), getattr(C, "RESEARCH_INBOX", None)) if _kn_repo() else {}
+    reqs, _ = _all_requests()
     for r in repos:     # 已晋升到基座结论台账的现行结论数 / 收件箱排队数 (知识库设计 8 节)
         r["knowledge"] = counts.get(r["name"]) or {"findings": 0, "queued": 0}
+        # 本库提给基座、仍未结的请求 (晋升 / 其他), 晋升队列 (H-106)
+        mine = [q for q in reqs if q.get("from") == r["name"] and q.get("status") in ("open", "acked")]
+        r["requests_open"] = {"promote": sum(q.get("kind") == "promote" for q in mine),
+                              "other": sum(q.get("kind") != "promote" for q in mine)}
     return jsonify({"repos": repos, "unregistered": unregistered,
                     "configured": bool(getattr(C, "RESEARCH_REGISTRY", None)),
                     "main": main_sha.strip() if rc == 0 else "",
@@ -541,6 +546,113 @@ def api_research_new():
     if not _RESEARCH_NAME_RE.match(name):
         return jsonify({"rc": 1, "out": "名字须是小写字母开头的小写字母/数字/下划线 (2-41 位)"}), 400
     return jsonify({"rc": 0, "cmd": cmd_tpl.format(name=name), "path": C.REPO_ROOT})
+
+
+# ---------------- 路由: 晋升队列 (2026-10-27, H-106; 设计稿 research_repos_design 4.4 / 5.4 / 5.5) ----------------
+# 数据 = 基座跨线请求台账 (tools/harness/requests.py list --json): 研究库在自己 main 上提交 requests/<名>.jsonl,
+# kind=promote 是成果晋升. 队列在 "基座开发" 页签 (晋升优先, 再按等待天数); 研究库详情列本库的请求并可 "发起晋升"
+# (只写并提交本库的请求文件, 不改基座). 处理 (ack / close / decline) 与落地仍在基座 worktree 里做, 页面只给命令.
+
+_ALLREQ = {"t": 0.0, "v": None}
+_PROMOTE_ARTIFACTS = ("factor", "dataset", "tool", "finding", "signal", "other")
+
+
+def _requests_tool():
+    return os.path.join(C.REPO_ROOT, "tools", "harness", "requests.py")
+
+
+def _run_requests(args, cwd, timeout=60):
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")     # 管道输出默认按 GBK 编, 不设中文会乱
+    return subprocess.run([sys.executable, _requests_tool()] + list(args), cwd=cwd, capture_output=True,
+                          timeout=timeout, env=env)
+
+
+def _all_requests(force=False):
+    """(全部请求, 错误); 要扫 git refs 与各研究库, 60 秒内复用."""
+    if force or _ALLREQ["v"] is None or time.time() - _ALLREQ["t"] > 60:
+        try:
+            p = _run_requests(["list", "--json"], C.REPO_ROOT)
+            if p.returncode != 0:
+                raise ValueError((p.stderr or p.stdout).decode("utf-8", "replace").strip()[-300:])
+            rows = json.loads(p.stdout.decode("utf-8-sig", "replace") or "null")
+            _ALLREQ["v"] = (rows if isinstance(rows, list) else [], "")
+        except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+            _ALLREQ["v"] = ([], "读不了跨线请求台账: %s" % e)
+        _ALLREQ["t"] = time.time()
+    return _ALLREQ["v"]
+
+
+def _queue_item(r):
+    """队列条目 + 基座侧落地命令 (worktree 开在基座检出旁边, 与现有 wt-* 同级)."""
+    rid = r.get("id") or ""
+    wt = os.path.join(os.path.dirname(os.path.abspath(C.REPO_ROOT)), "wt-" + rid.replace("_", "-")).replace("\\", "/")
+    r = dict(r)
+    r["land"] = [
+        "python tools/harness/requests.py ack %s --note \"...\"" % rid,
+        "git worktree add --detach %s main   # 在 worktree 里按契约落地, 测试 + 门全过后 git merge --ff-only 进 main" % wt,
+        "python tools/harness/requests.py close %s --commit <落地提交>   # 或 decline %s --reason \"...\"" % (rid, rid),
+    ]
+    return r
+
+
+@app.route("/api/promotion")
+def api_promotion():
+    reqs, err = _all_requests(force=request.args.get("refresh") == "1")
+    research = set(_research_registry())
+    open_ = [r for r in reqs if r.get("status") in ("open", "acked")]
+    open_.sort(key=lambda r: (r.get("kind") != "promote", -(r.get("age_days") or 0), r.get("id") or ""))
+    return jsonify({"error": err, "queue": [_queue_item(r) for r in open_],
+                    "n_promote": sum(r.get("kind") == "promote" for r in open_),
+                    "n_research": sum(r.get("from") in research for r in open_),
+                    "n_overdue": sum(bool(r.get("overdue")) for r in open_)})
+
+
+@app.route("/api/research/requests")
+def api_research_requests():
+    name = request.args.get("name") or ""
+    reqs, err = _all_requests(force=request.args.get("refresh") == "1")
+    mine = [r for r in reqs if r.get("from") == name]
+    mine.sort(key=lambda r: (r.get("status") not in ("open", "acked"), -(r.get("age_days") or 0)))
+    return jsonify({"error": err, "requests": mine})
+
+
+@app.route("/api/research/promote", methods=["POST"])
+def api_research_promote():
+    """发起晋升: 在研究库 main 上 requests.py open --kind promote, 再只提交 requests/<名>.jsonl (过本库研究档位门).
+    研究库工作区别的改动不碰 (git commit -- <该文件>)."""
+    b = request.get_json(silent=True) or {}
+    name = (b.get("name") or "").strip()
+    reg = _research_registry()
+    if name not in reg:
+        return jsonify({"rc": 1, "out": "登记册里没有 %s" % name}), 400
+    repo = _research_path(reg[name], name)
+    if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+        return jsonify({"rc": 1, "out": "本机没有研究库 %s" % name}), 400
+    artifact = (b.get("artifact") or "").strip()
+    if artifact not in _PROMOTE_ARTIFACTS:
+        return jsonify({"rc": 1, "out": "成果类型须是 %s" % "/".join(_PROMOTE_ARTIFACTS)}), 400
+    args = ["open", "--kind", "promote", "--artifact", artifact,
+            "--target", (b.get("target") or "").strip(), "--title", (b.get("title") or "").strip(),
+            "--evidence", (b.get("evidence") or "").strip()]
+    for p in b.get("paths") or []:
+        if str(p).strip():
+            args += ["--path", str(p).strip()]
+    try:
+        p = _run_requests(args, repo)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return jsonify({"rc": 1, "out": "跑不了 requests.py: %s" % e}), 500
+    out = (p.stdout + p.stderr).decode("utf-8", "replace").strip()
+    if p.returncode != 0:
+        return jsonify({"rc": p.returncode, "out": out})
+    m = re.search(r"已写 (\S+) open", out)
+    rid = m.group(1) if m else "?"
+    rel = "requests/%s.jsonl" % name
+    rc1, o1 = run_git(repo, ["add", "--", rel])
+    rc2, o2 = run_git(repo, ["commit", "-m", "requests: open %s (promote %s)" % (rid, artifact), "--", rel])
+    _ALLREQ["v"] = None
+    if rc1 != 0 or rc2 != 0:
+        return jsonify({"rc": 1, "out": out + "\n\n已写但提交失败 (研究库里手工提交 %s):\n%s%s" % (rel, o1, o2)})
+    return jsonify({"rc": 0, "id": rid, "out": out + "\n" + o2})
 
 
 # ---------------- 路由: 知识 (知识页签, 2026-10-26, 知识库改造第 6 步; 数据层 knowledge.py) ----------------

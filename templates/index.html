@@ -37,6 +37,7 @@
 <section class="panel active" id="tab-streams">
   <div class="left">
     <div id="wipbar" class="wipbar"></div>
+    <div id="promobar" class="wipbar" title="研究库提给基座的晋升 / 请求 (跨线请求台账, static/research.js)"></div>
     <div id="cards"></div>
   </div>
   <div class="right">
@@ -189,6 +190,17 @@
     <div class="modalfoot">
       <span id="sessdir" style="color:#6e7681;font-size:11px;font-family:Consolas,monospace"></span>
     </div>
+  </div>
+</div>
+
+<!-- 晋升队列模态 (基座开发页签, static/research.js) -->
+<div class="modal" id="promomodal" style="display:none">
+  <div class="modalbox">
+    <div class="modalhead">
+      <span>晋升队列 (全部未结的跨线请求, 晋升优先)</span>
+      <button onclick="document.getElementById('promomodal').style.display='none'">关闭</button>
+    </div>
+    <div class="modalbody rq-body" id="promobody"></div>
   </div>
 </div>
 
