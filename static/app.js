@@ -323,7 +323,26 @@ function closeDiff(){ document.getElementById("diffmodal").style.display="none";
 
 // ===== 实验注册表 =====
 let regData=[];
-async function loadRegistry(){ regData=await jget("/api/registry"); renderRegistry(); }
+// 归属 = "基座" + 登记册里的研究库名 (经 /api/artifacts/roots 的 streams 取, 不再写死 stream 分支名;
+// 2026-10-28 stream 分支全部退役) + 已有条目里出现过的旧值 (老条目仍可筛)
+let regOwnerList=null;
+async function regOwners(){
+  if(!regOwnerList){
+    try{
+      const d=await jget("/api/artifacts/roots");
+      regOwnerList=["基座"].concat((d.streams||[]).map(s=>s.key).filter(k=>k!=="all"&&k!=="shared"));
+    }catch(e){ regOwnerList=["基座"]; }
+  }
+  return regOwnerList;
+}
+async function loadRegistry(){
+  regData=await jget("/api/registry");
+  const sel=document.getElementById("regfilter"), cur=sel.value;
+  const owners=[...new Set((await regOwners()).concat(regData.map(e=>e.stream).filter(Boolean)))];
+  sel.innerHTML='<option value="">全部归属</option>'+owners.map(o=>`<option value="${esc(o)}">${esc(o)}</option>`).join("");
+  sel.value=owners.includes(cur)?cur:"";
+  renderRegistry();
+}
 function renderRegistry(){
   const f=document.getElementById("regfilter").value;
   const rows=regData.filter(e=>!f||e.stream===f).map(e=>`<tr>
@@ -333,14 +352,15 @@ function renderRegistry(){
     <td>${esc(e.version||"")}</td>
     <td>${["RUNNING","PASS","HONEST-FAIL"].map(s=>`<button onclick="regSet(${e.id},'${s}')">${s[0]}</button>`).join("")}
         <button onclick="regDel(${e.id})">×</button></td></tr>`).join("");
-  document.getElementById("regtable").innerHTML=`<table><tr><th>id</th><th>stream</th><th>日期</th>
+  document.getElementById("regtable").innerHTML=`<table><tr><th>id</th><th>归属</th><th>日期</th>
     <th>假设</th><th>kill 准则</th><th>结论</th><th>FS版本</th><th>操作</th></tr>${rows}</table>`;
 }
-function showRegForm(){
+async function showRegForm(){
   const el=document.getElementById("regform");
   el.style.display=el.style.display==="none"?"grid":"none";
+  const owners=await regOwners();
   el.innerHTML=`
-    <label>stream<select id="rf_stream"><option>etf-timing</option><option>index-enhance</option><option>regime-style</option></select></label>
+    <label>归属<select id="rf_stream">${owners.map(o=>`<option>${esc(o)}</option>`).join("")}</select></label>
     <label>日期<input id="rf_date" value="${new Date().toISOString().slice(0,10)}"></label>
     <label class="full">假设 (hypothesis)<input id="rf_hyp"></label>
     <label class="full">kill 准则<input id="rf_kill"></label>

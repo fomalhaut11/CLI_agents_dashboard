@@ -15,7 +15,10 @@
   "_streamFolder": "分支 -> 该 stream 允许改动的专属文件夹。stream 分支改到 corePrefixes 里的共享路径 = 越界警告。",
 
   "corePrefixes": ["core/", "docs/", "config/", "tools/", "README.md", ".gitignore"],
-  "_corePrefixes": "共享核心白名单前缀; stream 分支改到这些 = 应走 main。",
+  "_corePrefixes": "共享核心白名单前缀; stream 分支改到这些 = 应走 main。streamFolder 为空 (没有 stream 分支, 本仓分支都是基座开发线) 时只标注不告警。",
+
+  "frozenPrefixes": [],
+  "_frozenPrefixes": "只读冻结区前缀 (如研究线迁出后的快照目录 [\"streams/\", \"tests/streams/\"]); 非 main 分支改到 = 越界。",
 
   "registryPaths": [],
   "_registryPaths": "共享单文件注册表(多 stream 并行时改动应走 main, 防冲突)。",

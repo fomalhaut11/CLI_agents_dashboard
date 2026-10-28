@@ -80,6 +80,10 @@ def classify_path(branch, f):
     for rp in C.REGISTRY_PATHS:
         if f == rp:
             return ("warn", "registry", "注册表改动应走 main")
+    # main 上的冻结快照区 (H-097): 研究线迁出时的快照, 只读; 研究线在研究库里改
+    for pre in getattr(C, "FROZEN_PREFIXES", ()):
+        if f.startswith(pre):
+            return ("violation", "frozen", "冻结快照 (H-097) 只读, 研究线在研究库里改")
     allowed = C.STREAM_FOLDER.get(branch)
     if allowed and f.startswith(allowed + "/"):
         return ("ok", "own", "")
@@ -98,6 +102,13 @@ def classify_path(branch, f):
     if branch == C.FACTOR_STREAM:
         if f.startswith("factors/repository/") or f.startswith("tests/"):
             return ("ok", "factor", "")
+    if not C.STREAM_FOLDER:
+        # 没有 stream 分支了 (2026-10-28 全部退役): 本仓分支都是基座开发线, 改共享核心是本职,
+        # 落地走 worktree + --ff-only. 共享前缀只标注不告警 (提交时 harness A0 闸会给 warn).
+        for pre in C.CORE_PREFIXES:
+            if f.startswith(pre):
+                return ("ok", "core", "共享核心: 落地走 worktree + --ff-only 进 main")
+        return ("ok", "base", "")
     # 共享核心
     for pre in C.CORE_PREFIXES:
         if f.startswith(pre):
