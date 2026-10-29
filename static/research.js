@@ -19,7 +19,7 @@ function researchBadges(r){
   }
   if(!r.link_ok) b.push('<span class="badge rs-bad" title="pin 检出里 streams/&lt;名字&gt; 不是指向本库的联接: python tools/research_pin.py prepare &lt;pin&gt; --execute">联接缺</span>');
   if(!r.hook_ok) b.push('<span class="badge rs-bad" title="研究档位门没装: python tools/research_pin.py hook &lt;库&gt; --execute">门缺</span>');
-  if(r.registered_pin&&r.pin&&r.registered_pin!==r.pin) b.push('<span class="badge rs-bad" title="登记册 base_pin 与库内 base.pin 不一致">登记册不一致</span>');
+  if(r.registered_pin&&r.pin&&r.registered_pin!==r.pin) b.push('<span class="badge rs-behind" title="登记册 base_pin 还是 '+esc(r.registered_pin.slice(0,8))+', 库内 base.pin 为准 (提示, 不是故障; 有空去 main 改 config/research_repos.yaml)">登记册待跟进</span>');
   if(r.knowledge) b.push(`<span class="badge rs-pin" title="已晋升到基座结论台账的现行结论 / 收件箱排队 (知识页签)">结论 ${r.knowledge.findings} · 排队 ${r.knowledge.queued}</span>`);
   const ro=r.requests_open;
   if(ro&&(ro.promote||ro.other)) b.push(`<span class="badge rs-behind" title="本库提给基座、仍未结的请求 (跨线请求台账; 基座开发页签的晋升队列)">晋升 ${ro.promote}${ro.other?" · 请求 "+ro.other:""}</span>`);
@@ -59,7 +59,8 @@ async function loadResearch(){
   }catch(e){ left.innerHTML='<div class="artempty">加载失败: '+esc(String(e))+'</div>'; }
 }
 
-// 终端在 "基座开发" 页签的终端区 (两个页签共用终端); 新开 shell 先 . ./env.ps1 设 PYTHONPATH (Claude 会话读 .claude/settings.json)
+// 终端在 "基座开发" 页签的终端区 (两个页签共用终端); 后端按库内 base.pin 给新 shell 设 PYTHONPATH = 研究库根;pin 检出
+// (2026-10-29, 不用再 . ./env.ps1; 标签前缀 "研", 悬停看 PYTHONPATH). Claude 会话读 .claude/settings.json, 同值.
 function researchTerminal(path){
   document.querySelector('.tab[data-tab="streams"]').click();
   activePath=path;
@@ -74,7 +75,6 @@ async function researchDetail(name){
   const r=await jget("/api/research/detail?name="+encodeURIComponent(name));
   if(r.error){ box.innerHTML=esc(r.error); return; }
   if(!r.exists){ box.innerHTML="本机没有这个研究库"; return; }
-  const pinHint='<h4>升级 pin</h4><div id="rs-pin">加载中...</div>';
   const impact=r.impact_files&&r.impact_files.length
     ? `<h4>pin 之后改到本库 import 的基座文件 (${r.impact_files.length})</h4><pre class="rs-pre">${r.impact_files.map(esc).join("\n")}</pre>`
     : "";
@@ -83,18 +83,41 @@ async function researchDetail(name){
   const summary=r.summary
     ? (typeof marked!=="undefined" ? marked.parse(r.summary) : `<pre class="rs-pre">${esc(r.summary)}</pre>`)
     : '<div class="artempty">没有 streams/'+esc(name)+'/RESEARCH_SUMMARY.md</div>';
+  const p=r.path.replace(/\\/g,"\\\\");
+  const dirty=r.staged+r.unstaged+r.untracked;
+  const ro=r.requests_open||{};
+  const tabs=[["overview","概览"],["pin","升级 pin"+(r.pin_behind?" ("+r.pin_behind+")":"")],
+    ["promote","晋升与请求"+((ro.promote||ro.other)?" ("+((ro.promote||0)+(ro.other||0))+")":"")],["summary","RESEARCH_SUMMARY"]];
   box.innerHTML=`<h3>${esc(name)} <span class="rs-sub">${esc(r.path)}</span></h3>
     <div class="badges">${researchBadges(r)}</div>
-    <div class="rs-meta">base.pin <code>${esc(r.pin)}</code> · 数据命名空间 <code>${esc(r.data_namespace||"-")}</code>
-      ${r.lineage_nodes.length?" · 血缘节点 "+r.lineage_nodes.map(esc).join(", "):""}</div>
-    ${pinHint}${impact}
-    <h4>晋升与请求 <button onclick="promoteForm('${esc(name)}')">发起晋升</button></h4>
-    <div id="rs-promote-form"></div><div id="rs-requests">加载中...</div>
-    <h4>最近提交</h4><pre class="rs-pre">${r.commits.map(esc).join("\n")}</pre>
-    ${pinLog}
-    <h4>RESEARCH_SUMMARY</h4><div class="rs-summary md">${summary}</div>`;
+    <div class="rs-subtabs">${tabs.map(([k,t])=>`<button class="rs-subtab" data-sub="${k}" onclick="researchSubTab('${k}')">${esc(t)}</button>`).join("")}</div>
+    <div class="rs-pane" data-sub="overview">
+      <div class="rs-meta">base.pin <code>${esc(r.pin)}</code> · 数据命名空间 <code>${esc(r.data_namespace||"-")}</code>
+        ${r.lineage_nodes.length?" · 血缘节点 "+r.lineage_nodes.map(esc).join(", "):""}</div>
+      <div class="actions"><button class="primary" onclick="researchTerminal('${p}')">终端</button>
+        <button onclick="openSessions('${p}','${esc(name)}')">会话</button>
+        <button onclick="openDiff('${p}','${esc(name)}')">改动${dirty?` (${dirty})`:""}</button></div>
+      <div class="rs-hint">终端 PYTHONPATH: ${r.term_pythonpath?`<code>${esc(r.term_pythonpath)}</code> (面板新开的终端自动设好, 按库内 base.pin; 升级 pin 后新开终端才换)`:esc(r.term_note||"未设")}</div>
+      <h4>最近提交</h4><pre class="rs-pre">${r.commits.map(esc).join("\n")}</pre></div>
+    <div class="rs-pane" data-sub="pin"><div id="rs-pin">加载中...</div>${impact}${pinLog}</div>
+    <div class="rs-pane" data-sub="promote">
+      <h4>晋升与请求 <button onclick="promoteForm('${esc(name)}')">发起晋升</button></h4>
+      <div id="rs-promote-form"></div><div id="rs-requests">加载中...</div></div>
+    <div class="rs-pane" data-sub="summary"><div class="rs-summary md">${summary}</div></div>`;
+  researchSubTab(researchSub);
   loadResearchRequests(name);
   loadPinBox(name);
+}
+
+// 详情分页签 (2026-10-29): 概览 / 升级 pin / 晋升与请求 / RESEARCH_SUMMARY; 记住上次停在哪个 (换库也保持)
+let researchSub=(()=>{ try{ return localStorage.getItem("rs-sub")||"overview"; }catch(e){ return "overview"; } })();
+function researchSubTab(k){
+  const box=document.getElementById("research-detail");
+  if(!box.querySelector(`.rs-pane[data-sub="${k}"]`)) k="overview";
+  researchSub=k;
+  try{ localStorage.setItem("rs-sub",k); }catch(e){}
+  box.querySelectorAll(".rs-subtab").forEach(b=>b.classList.toggle("active",b.dataset.sub===k));
+  box.querySelectorAll(".rs-pane").forEach(x=>x.classList.toggle("active",x.dataset.sub===k));
 }
 
 // ===== 升级 pin 页面化 (2026-10-29): 选基座提交 -> 对照 (旧 / 新 pin 下本库测试 + import 判定) -> 提交 -> 可一键回退 =====
@@ -133,7 +156,7 @@ async function loadPinBox(name){
         (<code>${esc(lu.old.slice(0,8))}</code> → <code>${esc(lu.new.slice(0,8))}</code>)
         ${lu.revertable&&d.enabled?` <button onclick="pinRevert()">回退到 ${esc(lu.old.slice(0,8))}</button>`:(lu.revertable?"":" · 之后 pin 已变, 不可一键回退")}</div>` : "";
   box.innerHTML=pick+trials+last+(d.enabled?"":'<div class="rs-hint">本面板未配置 pin 工具命令 (researchPinCmd), 只读</div>')+
-    '<div class="rs-hint">登记册 config/research_repos.yaml 的 base_pin 在基座 main 上, 页面不改; 升级 / 回退后卡片会显示 "登记册不一致", 去 main 的 worktree 改。</div>';
+    '<div class="rs-hint">登记册 config/research_repos.yaml 的 base_pin 在基座 main 上, 页面不改; 升级 / 回退后卡片显示黄色 "登记册待跟进" (提示, 以库内 base.pin 为准), 有空去 main 的 worktree 改。</div>';
 }
 async function pinTrial(){
   const name=researchSel, rev=document.getElementById("pin-rev").value;
@@ -249,7 +272,7 @@ async function openOverview(){
   const pinRows=d.pins.map(p=>`<tr class="${p.stale?"rq-overdue":""}"><td>${esc(p.name)}</td>
     <td>${p.exists?`<code>${esc((p.pin||"").slice(0,8))}</code>`:"本机无"}</td><td>${esc(p.pin_date||"")}</td>
     <td>${p.behind==null?"":p.behind}</td><td>${p.age_days==null?"":p.age_days+"d"}</td>
-    <td>${p.stale?"过旧":""}${p.registered_pin&&p.pin&&p.registered_pin!==p.pin?" 登记册不一致":""}${p.status!=="active"?" "+esc(p.status):""}</td></tr>`).join("");
+    <td>${p.stale?"过旧":""}${p.registered_pin&&p.pin&&p.registered_pin!==p.pin?" 登记册待跟进":""}${p.status!=="active"?" "+esc(p.status):""}</td></tr>`).join("");
   const groups=d.pin_groups.map(g=>`<code>${esc(g.pin.slice(0,8))}</code>: ${g.repos.map(esc).join(", ")}`).join(" · ");
   const opts=d.commits.map(c=>`<option value="rev:${esc(c.sha)}">${esc(c.sha.slice(0,8))} ${esc(c.date)} ${esc(c.subject.slice(0,70))}</option>`).join("")+
     d.worktrees.map(w=>`<option value="path:${esc(w.path)}">worktree ${esc(w.branch)} (${esc(w.path)}) 未进 main 的改动</option>`).join("");

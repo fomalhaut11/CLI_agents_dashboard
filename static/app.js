@@ -49,8 +49,9 @@ function renderTabs(){
   const el=document.getElementById("termtabs");
   const html=!TERMS.size ? '<span class="notabs">无终端 — 点某 stream 的「终端」, 或右侧「+新」起一个</span>' : [...TERMS.values()].map(t=>{
     const s=termStateInfo(t);
-    return `<span class="termtab ts-${s.cls} ${t.id===activeTid?"active":""}" onclick="activateTerm('${t.id}')" title="${esc(t.cwd)}&#10;状态: ${esc(s.txt)}">
-       <span class="tt-dot"></span>${esc(t.label)}<span class="tt-st">${esc(s.txt)}</span>
+    const py=t.research?`&#10;研究库 ${esc(t.research)}: PYTHONPATH=${esc(t.pythonpath||"未设")}`:"";
+    return `<span class="termtab ts-${s.cls} ${t.id===activeTid?"active":""}" onclick="activateTerm('${t.id}')" title="${esc(t.cwd)}&#10;状态: ${esc(s.txt)}${py}">
+       <span class="tt-dot"></span>${t.research?'<span class="tt-rs">研</span>':""}${esc(t.label)}<span class="tt-st">${esc(s.txt)}</span>
        <span class="tt-x" onclick="event.stopPropagation();closeTerm('${t.id}')" title="关闭终端">×</span>
      </span>`;}).join("");
   if(html!==termTabsHtml){ el.innerHTML=html; termTabsHtml=html; }
@@ -81,6 +82,7 @@ async function refreshTermStatus(){
       if(!(isCodexTerm(t) && t.id===activeTid && t.userInputUntil && now<t.userInputUntil)){
         t.state=lv.state; t.agent=lv.agent; t.cpu=lv.cpu;
       }
+      t.research=lv.research; t.pythonpath=lv.pythonpath;
     }
     else if(!t.ws || t.ws.readyState>1){ t.alive=false; }  // 服务端已无此终端且我方未连 => 判退出
   }

@@ -132,6 +132,13 @@ select, input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
 .rs-pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; white-space: pre-wrap;
           font-family: Consolas, monospace; font-size: 12px; max-height: 260px; overflow-y: auto; }
 .rs-summary { border-top: 1px solid #30363d; padding-top: 6px; }
+.rs-subtabs { display: flex; gap: 4px; margin: 10px 0 4px; border-bottom: 1px solid #30363d; }
+.rs-subtab { background: transparent; border: 1px solid transparent; border-bottom: none; color: #8b949e;
+  padding: 4px 12px; cursor: pointer; border-radius: 6px 6px 0 0; font-size: 13px; }
+.rs-subtab.active { background: #21262d; color: #c9d1d9; border-color: #30363d; }
+.rs-pane { display: none; }
+.rs-pane.active { display: block; }
+.tt-rs { background: #1f3a5f; color: #79c0ff; border-radius: 3px; padding: 0 3px; margin-right: 4px; font-size: 11px; }
 /* 晋升队列 / 请求表 (2026-10-27, H-106) */
 .rq-body { display: block; overflow-y: auto; padding: 12px 16px; }
 .rq-table td { vertical-align: top; padding: 4px 6px; border-bottom: 1px solid #21262d; }

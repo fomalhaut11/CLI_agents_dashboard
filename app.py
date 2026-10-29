@@ -411,6 +411,29 @@ def _read_pin(repo):
         return ""
 
 
+def research_term_env(cwd):
+    """终端 cwd 落在某个已登记研究库里 -> (库名, PYTHONPATH, 说明); 不在任何研究库里 -> (None, None, "").
+    PYTHONPATH = 研究库根;<pin 检出根>/<base.pin> (与 research_pin.py 写进 env.ps1 / .claude/settings.json 的同式,
+    但直接按库内 base.pin 现算, 不信可能过期的副本). pin 检出不存在 -> 不设, 说明里给 prepare 命令."""
+    c = _norm(cwd)
+    for name, entry in _research_registry().items():
+        repo = _research_path(entry, name)
+        if not repo:
+            continue
+        r = _norm(repo)
+        if c != r and not c.startswith(r + os.sep):
+            continue
+        pin = _read_pin(repo)
+        pins_root = getattr(C, "BASE_PINS_ROOT", None)
+        if not pin or not pins_root:
+            return name, None, "没有 base.pin 或未配置 pin 检出根, PYTHONPATH 未设"
+        pd = os.path.join(pins_root, pin)
+        if not os.path.isdir(pd):
+            return name, None, "pin 检出 %s 不存在, PYTHONPATH 未设 (python tools/research_pin.py prepare %s --execute)" % (pd, pin[:8])
+        return name, os.pathsep.join([repo.replace("\\", "/"), pd.replace("\\", "/")]), ""
+    return None, None, ""
+
+
 def _base_imports(repo, head):
     """本库 .py 里 import 的基座模块 (顶层名在基座仓库里存在、且不是 streams 的)."""
     key = (repo, head)
@@ -552,6 +575,7 @@ def api_research_detail():
             info["summary"] = f.read(200_000)
     except OSError:
         info["summary"] = ""
+    _, info["term_pythonpath"], info["term_note"] = research_term_env(info["path"])
     rc, head = run_git(info["path"], ["rev-parse", "HEAD"])
     _, hits = _impact(info["path"], head.strip(), info["pin"])
     info["impact_files"] = sorted({"%s  <- %s" % (f, m) for m, f in hits})
@@ -2152,13 +2176,14 @@ class _NodePtyProc:
     桥接协议见 term-sidecar/pty-bridge.js。
     """
 
-    def __init__(self, shell_cmd, cwd, cols=100, rows=30):
+    def __init__(self, shell_cmd, cwd, cols=100, rows=30, env=None):
         args = [C.NODE_EXE, C.PTY_BRIDGE_JS, str(cols), str(rows), cwd,
                 shell_cmd[0]] + list(shell_cmd[1:])
         self._popen = subprocess.Popen(
             args, cwd=C.TERM_SIDECAR_DIR,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             bufsize=0, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=env,                  # 桥接把 process.env 交给 shell (研究库终端带 PYTHONPATH)
         )
         self._dec = codecs.getincrementaldecoder("utf-8")("replace")
         self._shell_pid = None        # 桥接经 stderr 报告的真实 shell pid (供状态扫描)
@@ -2225,11 +2250,19 @@ class _Term:
         self.id = tid
         self.cwd = cwd
         self.label = label or (os.path.basename(cwd.rstrip("\\/")) or "term")
+        # 研究库终端 (2026-10-29): cwd 在已登记研究库里 -> 新 shell 自带 PYTHONPATH = 研究库根;pin 检出,
+        # 不用再手工 . ./env.ps1. 只在建终端时算一次: 升级 pin 后要新开终端才换.
+        self.research, self.pythonpath, note = research_term_env(cwd)
+        env = dict(os.environ, PYTHONPATH=self.pythonpath) if self.pythonpath else None
         if C.USE_NODE_PTY:
-            self.proc = _NodePtyProc(C.SHELL, cwd, cols=100, rows=30)
+            self.proc = _NodePtyProc(C.SHELL, cwd, cols=100, rows=30, env=env)
         else:
-            self.proc = winpty.PtyProcess.spawn(C.SHELL, cwd=cwd, dimensions=(30, 100))
+            self.proc = winpty.PtyProcess.spawn(C.SHELL, cwd=cwd, dimensions=(30, 100), env=env)
         self.buf = ""
+        if self.research:
+            self.buf = "\x1b[90m[研究库 %s] %s\x1b[0m\r\n" % (
+                self.research, ("PYTHONPATH=" + self.pythonpath + " (按 base.pin 设; 升级 pin 后新开终端才换)")
+                if self.pythonpath else note)
         self.lock = threading.Lock()       # 保护 buf / ws 状态
         self.send_lock = threading.Lock()  # 串行化对 ws 的写, 防回放与实时帧交错
         self.ws = None
@@ -2404,7 +2437,8 @@ def api_terminals():
         terms = list(TERMS.values())
     items = []
     for t in terms:
-        d = {"id": t.id, "cwd": t.cwd, "label": t.label, "created": int(t.created)}
+        d = {"id": t.id, "cwd": t.cwd, "label": t.label, "created": int(t.created),
+             "research": t.research, "pythonpath": t.pythonpath}
         if want_status:
             d.update(t.status())   # state / agent / out_ago / cpu
         items.append(d)
