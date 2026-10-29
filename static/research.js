@@ -1,6 +1,8 @@
 // ===== 研究页签 (2026-10-26): 读研究库登记册, 卡片 + 详情 =====
 // 研究库是独立 git 库, 钉基座某提交 (base.pin). 卡片的脏 / 提交只算本库; "pin 落后 main N" 是提示不是故障;
-// 影响提示 o = pin 之后基座改动没碰到本库 import 的模块, ! = 碰到了 (升级 pin 后需复核结果).
+// 影响提示 ! = pin 之后基座改动碰到本库 import 的模块 (升级 pin 后需复核结果), ^ = 只改了同一顶层包里别的 .py
+// (可能间接用到, 建议升级), o = 都没有. 数据 = 登记册 lineage_nodes 在血缘快照里的 strict 判定 (数据页点亮图同源).
+// 已归档 (登记册 status: archived): 卡片变灰收进 "已归档", 不给升级 pin / 发起晋升 (2026-10-29 第 4 步).
 // 没有 "同步 main" 按钮: 升级 pin 在详情页 "升级 pin" 区块 (对照 -> 提交 -> 回退, 都调基座 tools/research_pin.py).
 let researchSel=null;
 
@@ -13,9 +15,19 @@ function researchBadges(r){
     const behind=r.pin_behind;
     b.push(`<span class="badge rs-pin" title="base.pin ${esc(r.pin)}">pin ${esc(r.pin.slice(0,8))}</span>`);
     if(behind) b.push(`<span class="badge rs-behind" title="pin 之后基座 main 的提交数 (提示, 不是故障)">落后 main ${behind}</span>`);
-    if(behind) b.push(r.impact.length
-      ? `<span class="badge rs-bang" title="pin 之后改动碰到本库 import 的模块: ${esc(r.impact.join(", "))}">! 影响 ${r.impact.length}</span>`
-      : '<span class="badge rs-ok" title="pin 之后的基座改动没碰到本库 import 的模块">o 无影响</span>');
+    if(behind) b.push(r.impact_level==="!"
+      ? `<span class="badge rs-bang" title="pin 之后改动碰到本库 import 的模块: ${esc(r.impact.join(", "))} (需升级并复核结果)">! 影响 ${r.impact.length}</span>`
+      : r.impact_level==="^"
+      ? `<span class="badge rs-soft" title="没改到本库直接 import 的模块, 但同一顶层包里有 ${r.impact_soft} 个 .py 改了 (可能间接用到, 建议升级)">^ 间接 ${r.impact_soft}</span>`
+      : '<span class="badge rs-ok" title="pin 之后的基座改动没碰到本库 import 的模块及其所在包">o 无影响</span>');
+  }
+  const dt=r.data;
+  if(dt){
+    const bad=dt.stale.length+dt.unknown.length;
+    const tip=dt.snapshot?`血缘快照 ${dt.snapshot} (strict 判定, 同数据页点亮图)`:"没有血缘快照: 数据页点亮图里生成";
+    b.push(bad
+      ? `<span class="badge ${dt.stale.length?"rs-bad":"rs-behind"}" title="${esc(tip)}; 不新鲜: ${esc(dt.stale.join(", ")||"-")}; 快照里没有: ${esc(dt.unknown.join(", ")||"-")}">数据 ${dt.fresh}/${dt.n} 新鲜</span>`
+      : `<span class="badge rs-ok" title="${esc(tip)}">数据 ${dt.n} 新鲜</span>`);
   }
   if(!r.link_ok) b.push('<span class="badge rs-bad" title="pin 检出里 streams/&lt;名字&gt; 不是指向本库的联接: python tools/research_pin.py prepare &lt;pin&gt; --execute">联接缺</span>');
   if(!r.hook_ok) b.push('<span class="badge rs-bad" title="研究档位门没装: python tools/research_pin.py hook &lt;库&gt; --execute">门缺</span>');
@@ -23,7 +35,6 @@ function researchBadges(r){
   if(r.knowledge) b.push(`<span class="badge rs-pin" title="已晋升到基座结论台账的现行结论 / 收件箱排队 (知识页签)">结论 ${r.knowledge.findings} · 排队 ${r.knowledge.queued}</span>`);
   const ro=r.requests_open;
   if(ro&&(ro.promote||ro.other)) b.push(`<span class="badge rs-behind" title="本库提给基座、仍未结的请求 (跨线请求台账; 基座开发页签的晋升队列)">晋升 ${ro.promote}${ro.other?" · 请求 "+ro.other:""}</span>`);
-  if(r.lineage_nodes.length) b.push(`<span class="badge rs-pin" title="${esc(r.lineage_nodes.join(", "))}">血缘节点 ${r.lineage_nodes.length}</span>`);
   return b.join("");
 }
 
@@ -32,7 +43,7 @@ function researchCard(r){
     <span class="name">本机无 (${esc(r.path||"路径未配置")})</span></div></div>`;
   const p=r.path.replace(/\\/g,"\\\\");
   const dirty=r.staged+r.unstaged+r.untracked;
-  return `<div class="card${researchSel===r.name?" active":""}" data-research="${esc(r.name)}">
+  return `<div class="card${researchSel===r.name?" active":""}${r.archived?" rs-archived":""}" data-research="${esc(r.name)}">
     <div class="row1"><span class="branch">${esc(r.name)}</span><span class="name">${esc(r.branch)}</span></div>
     <div class="badges">${researchBadges(r)}</div>
     <div class="commits">${r.commits.map(c=>"· "+esc(c)).join("<br>")}</div>
@@ -53,7 +64,9 @@ async function loadResearch(){
       (d.can_create?' <button onclick="researchNew()">+ 新建研究库</button>':"")+"</div>";
     if(d.unregistered.length) html+=`<div class="wipbar warn">研究库根下未登记: ${d.unregistered.map(esc).join(", ")}
       (把 research_new.py 打印的条目经 worktree 加进登记册)</div>`;
-    html+=d.repos.map(researchCard).join("");
+    const live=d.repos.filter(r=>!r.archived), arch=d.repos.filter(r=>r.archived);
+    html+=live.map(researchCard).join("");
+    if(arch.length) html+=`<details class="rs-archbox"><summary>已归档 (${arch.length})</summary>${arch.map(researchCard).join("")}</details>`;
     left.innerHTML=html;
     document.getElementById("meta").textContent=d.repos.length+" 研究库 · "+new Date().toLocaleTimeString();
   }catch(e){ left.innerHTML='<div class="artempty">加载失败: '+esc(String(e))+'</div>'; }
@@ -75,9 +88,11 @@ async function researchDetail(name){
   const r=await jget("/api/research/detail?name="+encodeURIComponent(name));
   if(r.error){ box.innerHTML=esc(r.error); return; }
   if(!r.exists){ box.innerHTML="本机没有这个研究库"; return; }
-  const impact=r.impact_files&&r.impact_files.length
-    ? `<h4>pin 之后改到本库 import 的基座文件 (${r.impact_files.length})</h4><pre class="rs-pre">${r.impact_files.map(esc).join("\n")}</pre>`
-    : "";
+  const impact=(r.impact_files&&r.impact_files.length
+    ? `<h4>! pin 之后改到本库 import 的基座文件 (${r.impact_files.length})</h4><pre class="rs-pre">${r.impact_files.map(esc).join("\n")}</pre>`
+    : "")+(r.impact_soft_files&&r.impact_soft_files.length
+    ? `<h4>^ 同一顶层包里别的改动 .py (${r.impact_soft_files.length}, 可能间接用到)</h4><pre class="rs-pre">${r.impact_soft_files.map(esc).join("\n")}</pre>`
+    : "");
   const pinLog=r.pin_log&&r.pin_log.length
     ? `<h4>pin 之后的基座提交 (最近 ${r.pin_log.length})</h4><pre class="rs-pre">${r.pin_log.map(esc).join("\n")}</pre>` : "";
   const summary=r.summary
@@ -86,9 +101,15 @@ async function researchDetail(name){
   const p=r.path.replace(/\\/g,"\\\\");
   const dirty=r.staged+r.unstaged+r.untracked;
   const ro=r.requests_open||{};
+  const dt=r.data;
   const tabs=[["overview","概览"],["pin","升级 pin"+(r.pin_behind?" ("+r.pin_behind+")":"")],
+    ["data","数据"+(dt?" ("+dt.fresh+"/"+dt.n+")":"")],
     ["promote","晋升与请求"+((ro.promote||ro.other)?" ("+((ro.promote||0)+(ro.other||0))+")":"")],["summary","RESEARCH_SUMMARY"]];
+  const archBtn=r.archived
+    ? `<button onclick="researchArchive('${esc(name)}',true)">取消归档</button>`
+    : `<button onclick="researchArchive('${esc(name)}',false)" title="登记册 status 改为 archived (临时 worktree 提交 + --ff-only 进 main); 不动研究库与数据">归档</button>`;
   box.innerHTML=`<h3>${esc(name)} <span class="rs-sub">${esc(r.path)}</span></h3>
+    ${r.archived?'<div class="wipbar warn">已归档 (登记册 status: archived): 只读, 不升级 pin、不发起晋升; 数据与研究库原样保留。</div>':""}
     <div class="badges">${researchBadges(r)}</div>
     <div class="rs-subtabs">${tabs.map(([k,t])=>`<button class="rs-subtab" data-sub="${k}" onclick="researchSubTab('${k}')">${esc(t)}</button>`).join("")}</div>
     <div class="rs-pane" data-sub="overview">
@@ -96,17 +117,64 @@ async function researchDetail(name){
         ${r.lineage_nodes.length?" · 血缘节点 "+r.lineage_nodes.map(esc).join(", "):""}</div>
       <div class="actions"><button class="primary" onclick="researchTerminal('${p}')">终端</button>
         <button onclick="openSessions('${p}','${esc(name)}')">会话</button>
-        <button onclick="openDiff('${p}','${esc(name)}')">改动${dirty?` (${dirty})`:""}</button></div>
+        <button onclick="openDiff('${p}','${esc(name)}')">改动${dirty?` (${dirty})`:""}</button> ${archBtn}</div>
       <div class="rs-hint">终端 PYTHONPATH: ${r.term_pythonpath?`<code>${esc(r.term_pythonpath)}</code> (面板新开的终端自动设好, 按库内 base.pin; 升级 pin 后新开终端才换)`:esc(r.term_note||"未设")}</div>
       <h4>最近提交</h4><pre class="rs-pre">${r.commits.map(esc).join("\n")}</pre></div>
-    <div class="rs-pane" data-sub="pin"><div id="rs-pin">加载中...</div>${impact}${pinLog}</div>
+    <div class="rs-pane" data-sub="pin">${r.archived?'<div class="rs-hint">已归档, 不升级 pin</div>':'<div id="rs-pin">加载中...</div>'}${impact}${pinLog}</div>
+    <div class="rs-pane" data-sub="data"><div id="rs-data">加载中...</div></div>
     <div class="rs-pane" data-sub="promote">
-      <h4>晋升与请求 <button onclick="promoteForm('${esc(name)}')">发起晋升</button></h4>
+      <h4>晋升与请求 ${r.archived?"":`<button onclick="promoteForm('${esc(name)}')">发起晋升</button>`}</h4>
       <div id="rs-promote-form"></div><div id="rs-requests">加载中...</div></div>
     <div class="rs-pane" data-sub="summary"><div class="rs-summary md">${summary}</div></div>`;
   researchSubTab(researchSub);
   loadResearchRequests(name);
-  loadPinBox(name);
+  if(!r.archived) loadPinBox(name);
+  loadResearchData(name);
+}
+
+// ===== 数据 (2026-10-29, 设计稿 5.3 第 5 项): 本库血缘节点 + 上游 (多来自基座) / 下游 (谁在用) =====
+// 判定读血缘快照 (数据页 "点亮图", strict judge, 与 manage.py data scan 同口径); 快照旧了到数据页刷新.
+function nodeChip(n){
+  const cls=!n.in_snapshot?"rs-behind":(n.fresh?"rs-ok":"rs-bad");
+  const tip=n.in_snapshot?`${n.status} · ${n.why||""}${n.endpoint?" · 终点 "+n.endpoint:""}${n.frequency?" · "+n.frequency:""}`:"快照里没有";
+  return `<span class="badge ${cls}" title="${esc(tip)}">${esc(n.name)}${n.owner!=="基座"?" @"+esc(n.owner):""}</span>`;
+}
+async function loadResearchData(name){
+  const box=document.getElementById("rs-data");
+  if(!box) return;
+  const d=await jget("/api/research/data?name="+encodeURIComponent(name));
+  if(researchSel!==name) return;
+  if(d.error){ box.innerHTML=`<div class="wipbar warn">${esc(d.error)}</div>`; return; }
+  const snap=d.missing_snapshot
+    ? '<div class="wipbar warn">没有血缘快照: 到数据页签 "点亮图" 生成后再看</div>'
+    : `<div class="rs-hint">血缘快照 ${esc(d.snapshot||"")} (${Math.round((d.age_s||0)/3600)} 小时前; strict 判定, 新鲜 = OK / FROZEN / STATIC)。快照旧了到数据页签 "点亮图" 刷新。</div>`;
+  if(!d.nodes.length){ box.innerHTML=snap+'<div class="artempty">登记册里本库没有血缘节点 (lineage_nodes 为空)</div>'; return; }
+  const rows=d.nodes.map(n=>`<tr class="${n.in_snapshot&&!n.fresh?"rq-overdue":""}"><td><b>${esc(n.name)}</b>
+      <div class="rs-sub">${esc(n.frequency||"")}${n.wave!=null?" · wave "+n.wave:""}${n.frozen?" · frozen":""}</div></td>
+    <td>${n.in_snapshot?esc(n.status):"快照里没有"}<div class="rs-sub">${esc(n.why||"")}</div></td><td>${esc(n.endpoint||"")}</td>
+    <td>${n.upstream.map(nodeChip).join(" ")||"-"}${n.external.length?`<div class="rs-sub">外部 ${n.external.map(esc).join(", ")}</div>`:""}</td>
+    <td>${n.downstream.map(nodeChip).join(" ")||"-"}</td></tr>`).join("");
+  box.innerHTML=snap+`<table class="rq-table"><tr><th>本库节点</th><th>判定</th><th>内容终点</th><th>上游</th><th>下游 (谁在用)</th></tr>${rows}</table>
+    <div class="rs-hint">上游 / 下游标签: 绿 = 新鲜, 红 = 不新鲜, 黄 = 快照里没有; "@库名" = 产者在别的研究库, 否则是基座节点。悬停看判据。</div>`;
+}
+
+// ===== 归档 (2026-10-29, 设计稿 5.4): 登记册 status -> archived / active, pin 工具 archive 子命令 (走 main) =====
+async function researchArchive(name, unarchive){
+  const what=unarchive?"取消归档":"归档";
+  if(!confirm(`${what} ${name}?\n\n基座 pin 工具在临时 worktree 里把 config/research_repos.yaml 的 ${name}.status 改为 ${unarchive?"active":"archived"} 并提交, `+
+    `再 --ff-only 进 main (过基座提交门, 可能几十秒)。研究库与数据不动。`)) return;
+  const j=await jpost("/api/research/archive",{name,unarchive});
+  if(j.rc!==0){ toast(j.out||"拒绝"); return; }
+  await startProcAt(j.path,j.cmd,what+" "+name);
+  const id=procSel;
+  toast(what+"进行中 (进程 #"+id+", 日志在进程页签)");
+  const poll=async()=>{
+    const p=(await jget("/api/proc/list")).find(x=>x.id===id);
+    if(p&&p.status==="running"){ setTimeout(poll,3000); return; }
+    toast(p&&p.rc===0?what+"完成":what+"失败, 看进程页签日志");
+    loadResearch(); if(researchSel===name) researchDetail(name);
+  };
+  setTimeout(poll,3000);
 }
 
 // 详情分页签 (2026-10-29): 概览 / 升级 pin / 晋升与请求 / RESEARCH_SUMMARY; 记住上次停在哪个 (换库也保持)
@@ -193,7 +261,8 @@ async function pinRevert(){
 // ===== 晋升 (2026-10-27, H-106): 研究库发起 -> 基座跨线请求台账 (kind=promote) -> 基座开发页签的晋升队列 =====
 function reqRow(q, withLand){
   const promo=q.kind==="promote";
-  const land=withLand&&q.land ? `<pre class="rs-pre">${q.land.map(esc).join("\n")}</pre>` : "";
+  const land=withLand&&q.land ? `<div><button class="primary" onclick="landRequest('${esc(q.id)}')" title="开基座 worktree (分支 land/&lt;id&gt;, 从 main) + 任务书, 在那里起 Claude 会话按契约落地">${q.land_wt?"继续处理 (worktree 已开)":"一键处理"}</button></div>
+    <details><summary class="rs-sub">手工命令</summary><pre class="rs-pre">${q.land.map(esc).join("\n")}</pre></details>` : "";
   return `<tr class="${q.overdue?"rq-overdue":""}"><td><code>${esc(q.id)}</code></td><td>${esc(q.from)}</td>
     <td>${esc(q.kind)}${promo&&q.artifact?" / "+esc(q.artifact):""}</td><td>${esc(q.status)}</td>
     <td>${q.age_days}d${q.overdue?" 超期":""}</td>
@@ -260,6 +329,20 @@ async function openPromo(){
     '<div class="rs-hint">处理在基座 main 的 worktree 里做 (页面不写台账): ack -> 开 worktree 按契约落地 (测试 / 血缘 / 前视审计 / 门) -> --ff-only 进 main -> close 引用落地提交。设计稿 research_repos_design 4.4 / 5.5。</div>'+
     reqTable(d.queue, true);
 }
+// 一键处理 (2026-10-29, 设计稿 5.4): 后端开 worktree + 写任务书 (worktree 的 git 目录里 LAND_BRIEF.md), 这里在该
+// worktree 开终端标签起 Claude 会话; ack / 落地 / --ff-only / close 由会话按任务书做 (ack 前先问人), 页面不写台账.
+async function landRequest(id){
+  if(!confirm(`处理请求 ${id}?\n\n开 (或复用) 基座 worktree + 分支 land/${id.replace(/_/g,"-")}, 写任务书, 在那里新开 Claude 会话。\n会话会先读依据, ack 之前问你。`)) return;
+  const j=await jpost("/api/promotion/land",{id});
+  if(j.rc!==0){ toast(j.out||"失败"); return; }
+  document.getElementById("promomodal").style.display="none";
+  document.querySelector('.tab[data-tab="streams"]').click();
+  activePath=j.path;
+  newTerm(j.path,"claude",j.cmd);
+  toast((j.created?"已开 worktree ":"复用 worktree ")+j.path+" · 任务书 "+j.brief);
+  refreshStreams();
+}
+
 // ===== 基座总览 (2026-10-27, 设计稿 5.5): pin 分布 + 影响预览 =====
 // pin 分布: 各研究库钉的基座提交 / 落后 main / 过旧高亮; 影响预览: main 上某次提交或某 worktree 未进 main 的改动
 // 碰到了哪些研究库 import 的模块 (只算 .py, 与研究卡片的影响提示同判据)
@@ -292,10 +375,11 @@ async function runImpact(){
   const q=v.startsWith("rev:")?"rev="+encodeURIComponent(v.slice(4)):"path="+encodeURIComponent(v.slice(5));
   const d=await jget("/api/impact_preview?"+q);
   if(d.error){ box.innerHTML=`<div class="wipbar warn">${esc(d.error)}</div>`; return; }
-  const rows=d.repos.map(r=>`<tr class="${r.hits.length?"rq-overdue":""}"><td>${esc(r.name)}</td>
-    <td>${r.hits.length?"! "+r.hits.length:"o"}</td><td>${r.hits.length?`<pre class="rs-pre">${r.hits.map(esc).join("\n")}</pre>`:"没碰到本库 import 的模块"}</td></tr>`).join("");
-  box.innerHTML=`<div class="rs-hint">${esc(d.label)}: 改了 ${d.changed.length} 个文件 (.py ${d.n_py}); 受影响研究库 ${d.affected.length?d.affected.map(esc).join(", "):"无"}。
-    判据: 被改的 .py 是研究库 import 的基座模块 (或其包下文件); 只是近似, 不看改的是不是接口。</div>
+  const rows=d.repos.map(r=>`<tr class="${r.level==="!"?"rq-overdue":""}"><td>${esc(r.name)}</td>
+    <td>${r.level==="!"?"! "+r.hits.length:(r.level==="^"?"^ "+r.soft.length:"o")}</td>
+    <td>${r.hits.length?`<pre class="rs-pre">${r.hits.map(esc).join("\n")}</pre>`:""}${r.soft.length?`<div class="rs-sub">^ 同包别的 .py:</div><pre class="rs-pre">${r.soft.map(esc).join("\n")}</pre>`:""}${r.level==="o"?"没碰到本库 import 的模块及其所在包":""}</td></tr>`).join("");
+  box.innerHTML=`<div class="rs-hint">${esc(d.label)}: 改了 ${d.changed.length} 个文件 (.py ${d.n_py}); ! 受影响 ${d.affected.length?d.affected.map(esc).join(", "):"无"}; ^ 可能间接 ${d.maybe&&d.maybe.length?d.maybe.map(esc).join(", "):"无"}。
+    判据: ! = 被改的 .py 是研究库 import 的基座模块 (或其包下文件); ^ = 只改了被 import 模块所在顶层包里别的 .py。只是近似, 不看改的是不是接口。</div>
     <table class="rq-table"><tr><th>研究库</th><th>影响</th><th>改到的文件 &lt;- 本库 import 的模块</th></tr>${rows}</table>`;
 }
 setInterval(()=>{ if(document.getElementById("tab-streams").classList.contains("active")) loadPromoBar(); },60000);

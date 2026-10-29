@@ -370,7 +370,8 @@ def api_stream_meta():
 # ---------------- 路由: 研究库 (研究页签, 2026-10-26) ----------------
 # 读登记册 (C.RESEARCH_REGISTRY, YAML: repos: {名字: {path, status, base_pin, lineage_nodes, data_namespace, ...}}).
 # 研究库 = 独立 git 库, 钉基座某提交 (库根 base.pin); 卡片只算本库的脏 / 提交, pin 落后基座 main 多少是提示不是故障.
-# 影响提示: pin..main 改动的基座文件与本库 import 的基座模块求交集 (o 无交集 / ! 有交集, 需升级并复核).
+# 影响提示 (设计稿 5.2): pin..main 改动的基座 .py 与本库 import 的基座模块求交集 -- ! 改到被 import 的模块 (需升级并
+# 复核结果); ^ 没改到被 import 的模块, 但改了同一顶层包里别的 .py (可能经包内 import 间接用到, 建议升级); o 都没有.
 # 不提供 "同步 main" (研究库升级 pin 走基座的 tools/research_pin.py upgrade).
 
 _RESEARCH_IMPORTS = {}   # (库路径, HEAD sha) -> 本库 import 的基座模块 (缓存)
@@ -466,16 +467,17 @@ def _base_imports(repo, head):
 
 
 def _impact(repo, head, pin):
-    """(pin 落后 main 的提交数, pin..main 改动的基座文件里被本库 import 碰到的 [(模块, 文件)])."""
+    """(pin 落后 main 的提交数, ! 档 [(模块, 文件)], ^ 档 [文件]) -- pin..main 改动的基座文件 vs 本库 import."""
     if not pin:
-        return None, []
+        return None, [], []
     rc, out = run_git(C.REPO_ROOT, ["rev-list", "--count", "%s..main" % pin])
     behind = int(out.strip()) if rc == 0 and out.strip().isdigit() else None
     if not behind:
-        return behind, []
+        return behind, [], []
     rc, out = run_git(C.REPO_ROOT, GIT_NOQUOTE + ["diff", "--name-only", pin, "main"])
     changed = [l.strip().strip('"') for l in out.splitlines() if l.strip()] if rc == 0 else []
-    return behind, _import_hits(repo, head, changed)
+    hits = _import_hits(repo, head, changed)
+    return behind, hits, _import_soft(repo, head, changed, hits)
 
 
 def _import_hits(repo, head, changed):
@@ -490,6 +492,102 @@ def _import_hits(repo, head, changed):
     return hits
 
 
+def _import_soft(repo, head, changed, hits):
+    """^ 档: 没被本库直接 import、但与被 import 的模块同属一个顶层包的改动 .py (如 import core.paths 时 core/x.py 改了).
+    tests/ 不算 (不进运行路径). 只是 "可能间接用到" 的提示, 不判定接口."""
+    hard = {f for _, f in hits}
+    tops = {m.split(".")[0] for m in _base_imports(repo, head)} - {"tests"}
+    return sorted(f for f in changed
+                  if f.endswith(".py") and f not in hard and f.split("/")[0] in tops)
+
+
+def _impact_level(hits, soft):
+    return "!" if hits else ("^" if soft else "o")
+
+
+# ---------------- 研究库的外部数据节点 (设计稿 5.2 / 5.3 第 5 项, 2026-10-29) ----------------
+# 登记册 lineage_nodes = 产者在本研究库的血缘节点. 新鲜度不在 web 线程里现判, 读数据页 "点亮图" 的血缘快照
+# (lineage_snapshot.py, strict judge, 与 manage.py data scan 同口径); 快照多旧页面照实显示, 刷新走数据页的按钮.
+_FRESH = ("OK", "FROZEN", "STATIC")
+_SNAP = {"mtime": None, "v": None}
+
+
+def _lineage_snap():
+    """{"generated_at", "nodes": {名字: 节点}, "down": {名字: [下游]}, "age_s"}; 没有快照 -> None. 按文件 mtime 缓存."""
+    try:
+        mt = os.path.getmtime(LINEAGE_SNAPSHOT)
+    except OSError:
+        return None
+    if _SNAP["mtime"] != mt:
+        try:
+            with open(LINEAGE_SNAPSHOT, encoding="utf-8") as f:
+                snap = json.load(f)
+        except (OSError, ValueError):
+            return None
+        nodes = {n["name"]: n for n in snap.get("nodes") or [] if n.get("name")}
+        down = {}
+        for n in nodes.values():
+            for u in n.get("upstream") or []:
+                down.setdefault(u, []).append(n["name"])
+        _SNAP.update(mtime=mt, v={"generated_at": snap.get("generated_at"), "nodes": nodes, "down": down})
+    return dict(_SNAP["v"], age_s=int(time.time() - mt))
+
+
+def _data_summary(names):
+    """卡片: 本库血缘节点里 新鲜 (OK / FROZEN / STATIC) 的个数, 不新鲜的名字, 快照里没有的名字."""
+    if not names:
+        return None
+    snap = _lineage_snap()
+    if snap is None:
+        return {"n": len(names), "fresh": 0, "stale": [], "unknown": list(names), "snapshot": None, "age_s": None}
+    fresh, stale, unknown = 0, [], []
+    for n in names:
+        node = snap["nodes"].get(n)
+        if node is None:
+            unknown.append(n)
+        elif node.get("status") in _FRESH:
+            fresh += 1
+        else:
+            stale.append(n)
+    return {"n": len(names), "fresh": fresh, "stale": stale, "unknown": unknown,
+            "snapshot": snap["generated_at"], "age_s": snap["age_s"]}
+
+
+def _owner_map():
+    """血缘节点 -> 产者研究库名 (登记册 lineage_nodes); 不在里面的是基座节点."""
+    return {n: name for name, e in _research_registry().items() for n in (e or {}).get("lineage_nodes") or []}
+
+
+def _node_row(snap, n, owners):
+    node = snap["nodes"].get(n) if snap else None
+    row = {"name": n, "owner": owners.get(n) or "基座", "in_snapshot": node is not None, "fresh": False}
+    if node:
+        row.update({k: node.get(k) for k in ("status", "why", "endpoint", "frequency", "wave", "frozen")})
+        row["fresh"] = node.get("status") in _FRESH
+    return row
+
+
+@app.route("/api/research/data")
+def api_research_data():
+    """研究库详情 "数据": 本库节点 (状态 / 判据 / 终点) + 各自的上游 (多来自基座) 与下游 (谁在用)."""
+    name = request.args.get("name") or ""
+    reg = _research_registry()
+    if name not in reg:
+        return jsonify({"error": "登记册里没有 %s" % name}), 404
+    snap = _lineage_snap()
+    owners = _owner_map()
+    rows = []
+    for n in (reg[name] or {}).get("lineage_nodes") or []:
+        row = _node_row(snap, n, owners)
+        node = snap["nodes"].get(n) if snap else None
+        row["upstream"] = [_node_row(snap, u, owners) for u in (node or {}).get("upstream") or []]
+        row["external"] = list((node or {}).get("external") or [])
+        row["downstream"] = [_node_row(snap, d, owners) for d in sorted((snap or {}).get("down", {}).get(n) or [])]
+        rows.append(row)
+    return jsonify({"nodes": rows, "snapshot": (snap or {}).get("generated_at"), "age_s": (snap or {}).get("age_s"),
+                    "missing_snapshot": snap is None})
+
+
 def research_info(name, entry):
     repo = _research_path(entry, name)
     info = {"name": name, "path": repo, "status": (entry or {}).get("status") or "active",
@@ -498,7 +596,10 @@ def research_info(name, entry):
             "data_namespace": (entry or {}).get("data_namespace"),
             "registered_pin": str((entry or {}).get("base_pin") or ""),
             "staged": 0, "unstaged": 0, "untracked": 0, "branch": "", "commits": [],
-            "pin": "", "pin_behind": None, "impact": [], "link_ok": False, "hook_ok": False}
+            "pin": "", "pin_behind": None, "impact": [], "impact_soft": 0, "impact_level": "",
+            "link_ok": False, "hook_ok": False}
+    info["archived"] = info["status"] == "archived"
+    info["data"] = _data_summary(info["lineage_nodes"])
     if not info["exists"]:
         return info
     rc, out = run_git(repo, ["status", "--porcelain=v1", "-b"])
@@ -517,8 +618,10 @@ def research_info(name, entry):
     head = head.strip() if rc == 0 else ""
     pin = _read_pin(repo)
     info["pin"] = pin
-    info["pin_behind"], hits = _impact(repo, head, pin)
+    info["pin_behind"], hits, soft = _impact(repo, head, pin)
     info["impact"] = sorted({m for m, _ in hits})
+    info["impact_soft"] = len(soft)
+    info["impact_level"] = _impact_level(hits, soft) if info["pin_behind"] else ""
     pins_root = getattr(C, "BASE_PINS_ROOT", None)
     if pins_root and pin:
         try:
@@ -581,8 +684,9 @@ def api_research_detail():
         info["summary"] = ""
     _, info["term_pythonpath"], info["term_note"] = research_term_env(info["path"])
     rc, head = run_git(info["path"], ["rev-parse", "HEAD"])
-    _, hits = _impact(info["path"], head.strip(), info["pin"])
+    _, hits, soft = _impact(info["path"], head.strip(), info["pin"])
     info["impact_files"] = sorted({"%s  <- %s" % (f, m) for m, f in hits})
+    info["impact_soft_files"] = soft
     info["pin_log"] = []
     if info["pin"]:
         rc, out = run_git(C.REPO_ROOT, ["log", "--format=%h %ad %s", "--date=short", "-30", "%s..main" % info["pin"]])
@@ -691,9 +795,31 @@ def _pin_args_or_error(b, need_rev=True):
     _repo, err = _research_repo_or_error(name)
     if err:
         return name, rev, err
+    if _is_archived(name):
+        return name, rev, "%s 已归档, 不升级 pin (要恢复先在概览页 \"取消归档\")" % name
     if need_rev and not _SHA_ARG_RE.match(rev):
         return name, rev, "rev 须是提交 sha"
     return name, rev, ""
+
+
+def _is_archived(name):
+    return ((_research_registry().get(name) or {}).get("status") or "") == "archived"
+
+
+@app.route("/api/research/archive", methods=["POST"])
+def api_research_archive():
+    """归档 / 取消归档 (设计稿 5.4): 登记册 status 是基座 main 上的共享文件, 由 pin 工具 archive 子命令在临时
+    worktree 里改并 --ff-only 进 main (会过基座的提交门, 可能要几十秒) -- 校验后返回命令, 前端以受管进程启动."""
+    b = request.get_json(silent=True) or {}
+    name, unarchive = (b.get("name") or "").strip(), bool(b.get("unarchive"))
+    if not getattr(C, "RESEARCH_PIN_CMD", None):
+        return jsonify({"rc": 1, "out": "本面板未配置 pin 工具命令"}), 400
+    if name not in _research_registry():
+        return jsonify({"rc": 1, "out": "登记册里没有 %s" % name}), 400
+    if _is_archived(name) != unarchive:
+        return jsonify({"rc": 1, "out": "%s 已经%s" % (name, "是 active" if unarchive else "归档")}), 400
+    args = ["archive", name] + (["--unarchive"] if unarchive else []) + ["--execute"]
+    return jsonify({"rc": 0, "cmd": _pin_cmd(*args), "path": C.REPO_ROOT})
 
 
 @app.route("/api/research/pin_trial", methods=["POST"])
@@ -774,7 +900,8 @@ def api_base_overview():
                 row["age_days"] = (time.time() - time.mktime(time.strptime(row["pin_date"], "%Y-%m-%d"))) // 86400
             except ValueError:
                 pass
-            row["stale"] = (row["behind"] or 0) > PIN_STALE_COMMITS or (row["age_days"] or 0) > PIN_STALE_DAYS
+            row["stale"] = row["status"] != "archived" and (
+                (row["behind"] or 0) > PIN_STALE_COMMITS or (row["age_days"] or 0) > PIN_STALE_DAYS)
         pins.append(row)
     groups = {}
     for p in pins:
@@ -825,10 +952,13 @@ def api_impact_preview():
     repos = []
     for name, repo, head in _research_repos_here():
         hits = _import_hits(repo, head, py)
-        repos.append({"name": name, "hits": sorted({"%s  <- %s" % (f, m) for m, f in hits})})
-    repos.sort(key=lambda r: (-len(r["hits"]), r["name"]))
+        soft = _import_soft(repo, head, py, hits)
+        repos.append({"name": name, "hits": sorted({"%s  <- %s" % (f, m) for m, f in hits}), "soft": soft,
+                      "level": _impact_level(hits, soft)})
+    repos.sort(key=lambda r: ("!^o".index(r["level"]), r["name"]))
     return jsonify({"label": label, "changed": changed, "n_py": len(py), "repos": repos,
-                    "affected": [r["name"] for r in repos if r["hits"]]})
+                    "affected": [r["name"] for r in repos if r["hits"]],
+                    "maybe": [r["name"] for r in repos if r["level"] == "^"]})
 
 
 # ---------------- 路由: 晋升队列 (2026-10-27, H-106; 设计稿 research_repos_design 4.4 / 5.4 / 5.5) ----------------
@@ -865,11 +995,18 @@ def _all_requests(force=False):
     return _ALLREQ["v"]
 
 
-def _queue_item(r):
-    """队列条目 + 基座侧落地命令 (worktree 开在基座检出旁边, 与现有 wt-* 同级)."""
-    rid = r.get("id") or ""
+def _land_paths(rid):
+    """(worktree 路径, 分支名) -- worktree 开在基座检出旁边, 与现有 wt-* 同级."""
     wt = os.path.join(os.path.dirname(os.path.abspath(C.REPO_ROOT)), "wt-" + rid.replace("_", "-")).replace("\\", "/")
+    return wt, "land/" + rid.replace("_", "-")
+
+
+def _queue_item(r):
+    """队列条目 + 基座侧落地命令."""
+    rid = r.get("id") or ""
+    wt, _branch = _land_paths(rid)
     r = dict(r)
+    r["land_wt"] = wt if os.path.isdir(wt) else ""
     r["land"] = [
         "python tools/harness/requests.py ack %s --note \"...\"" % rid,
         "git worktree add --detach %s main   # 在 worktree 里按契约落地, 测试 + 门全过后 git merge --ff-only 进 main" % wt,
@@ -888,6 +1025,77 @@ def api_promotion():
                     "n_promote": sum(r.get("kind") == "promote" for r in open_),
                     "n_research": sum(r.get("from") in research for r in open_),
                     "n_overdue": sum(bool(r.get("overdue")) for r in open_)})
+
+
+_RID_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}-\d{1,6}$")
+
+
+def _land_brief(r, wt, branch):
+    """落地会话的任务书 (写进该 worktree 的 git 目录, 不在工作区里, 不会被误提交)."""
+    rid = r.get("id")
+    main = C.REPO_ROOT.replace("\\", "/")
+    fields = ["id: %s" % rid, "from: %s" % r.get("from"), "kind: %s" % r.get("kind"),
+              "title: %s" % r.get("title"), "evidence: %s" % (r.get("evidence_ref") or "")]
+    if r.get("kind") == "promote":
+        fields += ["artifact: %s" % r.get("artifact"), "target (基座落点): %s" % r.get("target")]
+    if r.get("paths"):
+        fields.append("paths: %s" % ", ".join(r.get("paths")))
+    return "\n".join([
+        "# 落地跨线请求 %s" % rid, "",
+        "dashboard 晋升队列 \"一键处理\" 生成 (%s). 本会话在基座 worktree `%s` (分支 `%s`, 从 main 开出)."
+        % (time.strftime("%Y-%m-%d %H:%M"), wt, branch),
+        "", "## 请求", ""] + ["- " + f for f in fields] + [
+        "",
+        "## 步骤 (设计稿 docs/reports/research_repos_design_20261016.md 4.4: 晋升由基座侧在 worktree 落地后 --ff-only 进 main)",
+        "",
+        "1. 先读请求的依据 (研究库在 `%s/<库>/`, 只读, 不要改研究库) 与相关基座文档 (CLAUDE.md 文档优先;"
+        " 因子 / Barra 先读 docs/skills/dev/factor_dev.md), 判断能不能接。不能接 -> 跳到第 5 步 decline。"
+        % (getattr(C, "RESEARCH_ROOT", "") or "").replace("\\", "/"),
+        "2. 接: 在基座检出 `%s` (main 分支, 台账写者只能是 main) 跑"
+        " `python tools/harness/requests.py ack %s --note \"...\"`, 只提交 requests/main.jsonl"
+        " (`git commit -m ... -- requests/main.jsonl`, 别带上 main 检出里别的改动)。" % (main, rid),
+        "3. 在本 worktree 按契约落地: 代码复用 factors.generators / core.paths, 注册 (factor_registry.json /"
+        " derived_data.yaml / AVAILABLE_FACTORS 按需), 测试放 tests/, 前视审计, 文档同步 (docs/maintenance/change_policy.md)。"
+        " 研究库代码不拷贝, 按基座规范重写或移植。",
+        "4. 门全过后提交, 在基座检出 `git merge --ff-only %s`, 先验 `git rev-parse main` 等于本分支 HEAD 再继续"
+        " (main 常被别的会话推进: ff 失败就在本分支 rebase main 后重来)。" % branch,
+        "5. 在基座检出 `python tools/harness/requests.py close %s --commit <落地提交>`"
+        " (或 `decline %s --reason \"...\"`), 同样只提交 requests/main.jsonl。" % (rid, rid),
+        "6. 收尾: `git worktree remove %s` 与 `git branch -d %s`; 报告写 Docs updated: yes/no。" % (wt, branch),
+        "",
+    ])
+
+
+@app.route("/api/promotion/land", methods=["POST"])
+def api_promotion_land():
+    """一键处理 (设计稿 5.4): 给某条未结请求开基座 worktree (分支 land/<id>, 从 main) + 写任务书, 返回在那里起
+    Claude 会话的命令; 前端开终端标签跑它. ack / 落地 / ff / close 由会话按任务书做, 页面不写台账、不碰 main 检出.
+    worktree 已存在 (之前点过) -> 不重开, 只刷新任务书."""
+    rid = ((request.get_json(silent=True) or {}).get("id") or "").strip()
+    if not _RID_RE.match(rid):
+        return jsonify({"rc": 1, "out": "id 不合规"}), 400
+    reqs, err = _all_requests(force=True)
+    r = next((q for q in reqs if q.get("id") == rid), None)
+    if r is None:
+        return jsonify({"rc": 1, "out": err or "台账里没有 %s" % rid}), 400
+    if r.get("status") not in ("open", "acked"):
+        return jsonify({"rc": 1, "out": "%s 已结 (%s)" % (rid, r.get("status"))}), 400
+    wt, branch = _land_paths(rid)
+    created = False
+    if not os.path.isdir(wt):
+        rc, out = run_git(C.REPO_ROOT, ["worktree", "add", "-b", branch, wt, "main"])
+        if rc != 0:
+            return jsonify({"rc": rc, "out": "开 worktree 失败: " + out}), 500
+        created = True
+    rc, gd = run_git(wt, ["rev-parse", "--absolute-git-dir"])
+    if rc != 0:
+        return jsonify({"rc": 1, "out": "%s 不是 git worktree: %s" % (wt, gd)}), 500
+    brief = os.path.join(gd.strip(), "LAND_BRIEF.md")
+    with open(brief, "w", encoding="utf-8") as f:
+        f.write(_land_brief(r, wt, branch))
+    b = brief.replace("\\", "/")
+    cmd = 'claude "Read %s and carry out that request landing step by step; confirm with me before step 2 (ack)."' % b
+    return jsonify({"rc": 0, "path": wt, "branch": branch, "brief": b, "created": created, "cmd": cmd})
 
 
 @app.route("/api/research/requests")
@@ -911,6 +1119,8 @@ def api_research_promote():
     repo = _research_path(reg[name], name)
     if not repo or not os.path.isdir(os.path.join(repo, ".git")):
         return jsonify({"rc": 1, "out": "本机没有研究库 %s" % name}), 400
+    if _is_archived(name):
+        return jsonify({"rc": 1, "out": "%s 已归档, 不再发起晋升" % name}), 400
     artifact = (b.get("artifact") or "").strip()
     if artifact not in _PROMOTE_ARTIFACTS:
         return jsonify({"rc": 1, "out": "成果类型须是 %s" % "/".join(_PROMOTE_ARTIFACTS)}), 400

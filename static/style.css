@@ -283,3 +283,7 @@ tr:hover td { background: #161b22; }
 tr.kn-alarm td { color: #f85149; }
 .kn-detail pre { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; white-space: pre-wrap; font-size: 12px; }
 .kn-detail img { max-width: 100%; border: 1px solid #30363d; margin: 6px 0; }
+.badge.rs-soft { background: #21262d; color: #79c0ff; }
+.card.rs-archived { opacity: 0.55; }
+.rs-archbox { margin-top: 10px; }
+.rs-archbox > summary { cursor: pointer; color: #8b949e; padding: 4px 2px; }
