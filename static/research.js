@@ -103,7 +103,7 @@ async function researchDetail(name){
   const ro=r.requests_open||{};
   const dt=r.data;
   const tabs=[["overview","概览"],["pin","升级 pin"+(r.pin_behind?" ("+r.pin_behind+")":"")],
-    ["data","数据"+(dt?" ("+dt.fresh+"/"+dt.n+")":"")],
+    ["data","数据"+(dt?" ("+dt.fresh+"/"+dt.n+")":"")],["origin","来历"],
     ["promote","晋升与请求"+((ro.promote||ro.other)?" ("+((ro.promote||0)+(ro.other||0))+")":"")],["summary","RESEARCH_SUMMARY"]];
   const archBtn=r.archived
     ? `<button onclick="researchArchive('${esc(name)}',true)">取消归档</button>`
@@ -122,6 +122,7 @@ async function researchDetail(name){
       <h4>最近提交</h4><pre class="rs-pre">${r.commits.map(esc).join("\n")}</pre></div>
     <div class="rs-pane" data-sub="pin">${r.archived?'<div class="rs-hint">已归档, 不升级 pin</div>':'<div id="rs-pin">加载中...</div>'}${impact}${pinLog}</div>
     <div class="rs-pane" data-sub="data"><div id="rs-data">加载中...</div></div>
+    <div class="rs-pane" data-sub="origin"><div id="rs-origin" data-name="${esc(name)}"></div></div>
     <div class="rs-pane" data-sub="promote">
       <h4>晋升与请求 ${r.archived?"":`<button onclick="promoteForm('${esc(name)}')">发起晋升</button>`}</h4>
       <div id="rs-promote-form"></div><div id="rs-requests">加载中...</div></div>
@@ -186,6 +187,106 @@ function researchSubTab(k){
   try{ localStorage.setItem("rs-sub",k); }catch(e){}
   box.querySelectorAll(".rs-subtab").forEach(b=>b.classList.toggle("active",b.dataset.sub===k));
   box.querySelectorAll(".rs-pane").forEach(x=>x.classList.toggle("active",x.dataset.sub===k));
+  const og=document.getElementById("rs-origin");
+  if(k==="origin"&&og&&!og.dataset.loaded){ og.dataset.loaded="1"; loadResearchOrigin(og.dataset.name); }
+}
+
+// ===== 来历 (2026-10-29): stream 时期的档案 / 依赖 / 资产 =====
+// 档案 = 存档标签 archive/stream/<分支名> (登记册 legacy_branch) + main 上的冻结快照 (main_snapshot); 文件原文从存档读.
+// 依赖 = 本库 import 的基座模块, 现在 vs 存档那一版. 资产 = 血缘节点 / 研究库产出目录 / 冻结快照结果 / 疑似产出路径.
+// 疑似产出路径是按行扫写文件调用 (to_csv / savefig / open(..,"w") 等) 再追同文件赋值, 未核实, 只当线索.
+let originData=null;
+async function loadResearchOrigin(name){
+  const box=document.getElementById("rs-origin");
+  if(!box) return;
+  box.innerHTML="扫描存档中 (首次几秒)...";
+  const d=await jget("/api/research/origin?name="+encodeURIComponent(name));
+  if(researchSel!==name) return;
+  if(d.error){ box.innerHTML=`<div class="wipbar warn">${esc(d.error)}</div>`; return; }
+  originData=d;
+  const ti=d.tag_info;
+  const head=d.tag
+    ? `<div class="rs-meta">原分支 <code>${esc(d.legacy_branch)}</code> · 存档标签 <code>${esc(d.tag)}</code> = <code>${esc(ti.short)}</code> ${esc(ti.date)} ${esc(ti.subject)}</div>`+
+      (d.other_tags.length?`<div class="rs-meta">同前缀存档: ${d.other_tags.map(t=>`<code>${esc(t.tag)}</code> ${esc(t.line)}`).join(" · ")}</div>`:"")
+    : `<div class="wipbar warn">登记册没有 legacy_branch 或找不到存档标签${d.legacy_branch?" (archive/"+esc(d.legacy_branch)+")":""}: 档案 / 存档依赖 / 疑似产出路径都没有</div>`;
+  const snap=d.main_snapshot?`<div class="rs-meta">main 上冻结快照 <code>${esc(d.main_snapshot)}/</code> (${d.snapshot_files==null?"?":d.snapshot_files} 个文件, 只读, 迁出时的样子)</div>`:"";
+  const commits=d.commits.length?`<details><summary>存档里改过线目录的提交 (最近 ${d.commits.length})</summary><pre class="rs-pre">${d.commits.map(esc).join("\n")}</pre></details>`:"";
+  const outside=d.outside&&d.outside.length
+    ? `<details><summary>线目录外改过的文件 (${d.outside_total}, 相对分叉点 ${esc(d.merge_base||"")}; 当时在分支上动过的共享代码)</summary>${originFileList(d.outside)}</details>`
+    : (d.tag?'<div class="rs-sub">线目录外没有改动 (或存档已整体并入 main 历史)</div>':"");
+  box.innerHTML=`<h4>档案</h4>${head}${snap}${commits}
+    ${d.files.length?`<details><summary>存档里的线目录文件 (${d.files.length}, 点文件名看原文)</summary>${originFileList(d.files)}</details>`:""}${outside}
+    <div id="rs-origin-view"></div>
+    <h4>依赖的基座模块 (${d.deps.length})</h4>${originDeps(d)}
+    <h4>资产</h4>${originAssets(d)}
+    <h4>疑似产出路径 (${d.writes.length}${d.writes_truncated?"+, 已截断":""}) <span class="rs-sub">未核实</span></h4>${originWrites(d)}`;
+}
+function originFileList(files){
+  const groups={};
+  for(const f of files){ const dir=f.includes("/")?f.slice(0,f.lastIndexOf("/")):"."; (groups[dir]=groups[dir]||[]).push(f); }
+  return '<div class="rs-files">'+Object.keys(groups).sort().map(dir=>`<div><span class="rs-sub">${esc(dir)}/</span> `+
+    groups[dir].map(f=>`<a href="#" onclick="originView('${esc(f)}');return false">${esc(f.slice(dir.length+1)||f)}</a>`).join(" · ")+"</div>").join("")+"</div>";
+}
+function originDeps(d){
+  if(!d.deps.length) return '<div class="artempty">没扫到 import 基座模块</div>';
+  const rows=d.deps.map(m=>{
+    const tag=!m.then?'<span class="badge rs-soft">迁库后新增</span>':(!m.now?'<span class="badge rs-behind">现在已不用</span>':"");
+    return `<tr class="${!m.on_main||m.changed_since_pin?"rq-overdue":""}"><td><code>${esc(m.module)}</code> ${tag}</td>
+      <td>${m.now?"o":"-"}</td><td>${m.then?"o":"-"}</td><td>${m.changed_since_pin?"! 改过":""}</td>
+      <td>${m.on_main?"在":"<b>main 上已不存在</b>"}</td>
+      <td>${m.then_files.map(f=>`<a href="#" onclick="originView('${esc(f)}');return false">${esc(f.split("/").pop())}</a>`).join(" ")}</td></tr>`;
+  }).join("");
+  return `<table class="rq-table"><tr><th>模块</th><th>现在</th><th>stream 时期</th><th>pin 之后</th><th>main 上</th><th>存档里谁 import</th></tr>${rows}</table>
+    <div class="rs-hint">判据同影响提示: 顶层名是基座仓库里的目录 / 模块 (streams 除外)。"main 上已不存在" = 模块文件在 main 上找不到 (改名 / 删除), 升级 pin 会断。</div>`;
+}
+function originAssets(d){
+  if(!d.assets.length) return '<div class="artempty">没有登记的资产</div>';
+  const rows=d.assets.map(a=>{
+    const st=a.kind==="血缘节点"?`<span class="badge ${a.fresh?"rs-ok":"rs-bad"}">${esc(a.status)}</span> ${esc(a.detail||"")}`
+      :(a.files==null?'<span class="rs-sub">目录不存在</span>':a.files+" 个文件");
+    const op=a.art_key&&a.files!=null?`<button onclick="researchOpenArt('${esc(d.name)}','${esc(a.art_key)}')">在产出页打开</button>`:"";
+    return `<tr><td>${esc(a.kind)}</td><td>${esc(a.label)}${a.path?`<div class="rs-sub">${esc(a.path)}</div>`:""}</td><td>${st}</td><td>${op}</td></tr>`;
+  }).join("");
+  return `<table class="rq-table"><tr><th>类型</th><th>资产</th><th>状态</th><th></th></tr>${rows}</table>`;
+}
+function originWrites(d){
+  if(!d.writes.length) return '<div class="artempty">'+(d.tag?"存档代码里没扫到写文件调用":"没有存档, 没法扫")+'</div>';
+  const by={};
+  for(const w of d.writes) (by[w.kind]=by[w.kind]||[]).push(w);
+  const kinds=Object.keys(by).sort((a,b)=>by[b].length-by[a].length);
+  return `<div class="rs-hint">按行扫存档代码里的写文件调用 (to_csv / to_parquet / savefig / pickle.dump / open(..,"w") 等), 写调用里的变量按同文件的赋值 / 参数默认值 / 命令行默认值追至多 3 层后归类; 函数参数与跨文件传入的路径追不到。只是线索: 没跑过、不保证落点, 也可能漏 (如经第三方库写)。</div>
+    <input id="rs-wfilter" placeholder="过滤 (文件名 / 代码 / 线索)" oninput="originFilterWrites()" style="width:100%;margin:4px 0">`+
+    kinds.map(k=>`<details class="rs-wgroup"><summary>${esc(k)} (${by[k].length})</summary><table class="rq-table">${by[k].map(w=>
+      `<tr class="rs-wrow"><td><a href="#" onclick="originView('${esc(w.file)}',${w.line});return false">${esc(w.file.split("/").slice(-2).join("/"))}:${w.line}</a></td>
+       <td><code>${esc(w.code)}</code>${w.hints.length?`<div class="rs-sub">线索 ${w.hints.map(esc).join(" · ")}</div>`:""}</td></tr>`).join("")}</table></details>`).join("");
+}
+function originFilterWrites(){
+  const q=(document.getElementById("rs-wfilter").value||"").toLowerCase();
+  document.querySelectorAll("#rs-origin .rs-wgroup").forEach(g=>{
+    let n=0;
+    g.querySelectorAll(".rs-wrow").forEach(r=>{ const hit=!q||r.textContent.toLowerCase().includes(q); r.style.display=hit?"":"none"; n+=hit; });
+    g.style.display=n?"":"none";
+    if(q) g.open=n>0;
+  });
+}
+async function originView(path, line){
+  const box=document.getElementById("rs-origin-view");
+  if(!box||!originData) return;
+  box.innerHTML="读取中...";
+  const d=await jget("/api/research/origin_file?name="+encodeURIComponent(originData.name)+"&path="+encodeURIComponent(path));
+  if(d.error){ box.innerHTML=`<div class="wipbar warn">${esc(d.error)}</div>`; return; }
+  const lines=d.text.split("\n");
+  box.innerHTML=`<div class="rs-meta"><b>${esc(d.path)}</b> @ <code>${esc(d.tag)}</code>${d.truncated?" (截断)":""}
+      <button onclick="document.getElementById('rs-origin-view').innerHTML=''">关闭</button></div>
+    <pre class="rs-pre rs-code">${lines.map((l,i)=>`<span class="${i+1===line?"rs-hl":""}" id="${i+1===line?"rs-hl-line":""}">${String(i+1).padStart(5)}  ${esc(l)}</span>`).join("\n")}</pre>`;
+  const hl=document.getElementById("rs-hl-line");
+  (hl||box).scrollIntoView({block:hl?"center":"start"});
+}
+// 跳到 "产出" 页签并选中该研究库的某个产出根
+function researchOpenArt(stream,key){
+  artStream=stream; artKey=key;
+  document.querySelector('.tab[data-tab="artifacts"]').click();
+  if(artRootsLoaded){ document.getElementById("artstream").value=stream; artSetStream(stream); }
 }
 
 // ===== 升级 pin 页面化 (2026-10-29): 选基座提交 -> 对照 (旧 / 新 pin 下本库测试 + import 判定) -> 提交 -> 可一键回退 =====

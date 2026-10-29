@@ -694,6 +694,293 @@ def api_research_detail():
     return jsonify(info)
 
 
+# ---------------- 研究库 "来历" (stream 时期, 2026-10-29) ----------------
+# 研究线迁库前是基座仓库里的 stream 分支: 原分支已退役, 提交在存档标签 archive/stream/<分支名> (登记册 legacy_branch),
+# main 上 streams/<名字>/ 是迁出时的冻结快照 (登记册 main_snapshot, H-097). 这里把三样串起来:
+#   档案   存档标签 (及同前缀的 WIP 标签) 的提交 / 线目录文件树 / 线目录外改过的文件, 文件原文可点开
+#   依赖   本库 import 的基座模块: 现在的研究库 vs 存档标签那一版, 标 新增 / 消失 / pin 之后改过 / main 上已不存在
+#   资产   血缘节点 + 研究库产出目录 + 冻结快照里的 results / reports + 疑似产出路径 (存档代码里写文件的调用点,
+#          按行粗扫, 未核实: 写调用里的变量按同文件里的赋值追至多 3 层, 按追出来的表达式归类; 函数参数 / 跨文件
+#          传进来的路径追不到, 归 "看上下文")
+_ORIGIN_CACHE = {}       # (库名, 存档标签 sha) -> 扫描结果 (档案内容不变, 按 sha 缓存)
+_WRITE_RE = re.compile(r"\.(to_parquet|to_pickle|to_csv|to_excel|to_json|to_feather|to_hdf|savefig|write_text|"
+                       r"write_bytes|to_html)\s*\(|\b(pickle\.dump|json\.dump|joblib\.dump|np\.save[z]?|"
+                       r"numpy\.save|shutil\.copy\w*|torch\.save)\s*\(|\bopen\s*\([^)]*['\"](?:w|wb|a|ab|w\+)['\"]")
+_PATH_CONST_RE = re.compile(r"\b(DATA_ROOT|RESULTS_DIR|LOGS_DIR|PROJECT_ROOT|AUXILIARY_DIR|RAW_FACTORS_DIR|"
+                            r"BARRA_DIR|FACTOR_STORE_V2_DIR|[A-Z][A-Z0-9_]*_(?:DIR|ROOT|PATH))\b")
+_STR_RE = re.compile(r"""['"]([^'"\n]{2,120})['"]""")
+_ASSIGN_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*(?::[^=]+)?=(?!=)\s*(.+)$")
+_IDENT_RE = re.compile(r"\b([A-Za-z_]\w*)\b")
+_DEFAULT_RE = re.compile(r"""(?:[(,]\s*|--)([A-Za-z_][\w-]*)['"]?\s*(?::[^=,()]+)?=\s*([^,()]+(?:\([^()]*\))?)""")
+
+
+def _legacy_tags(entry):
+    """(主存档标签, [同前缀的其他存档标签]); legacy_branch 形如 stream/<x> -> archive/stream/<x>."""
+    br = str((entry or {}).get("legacy_branch") or "").strip()
+    if not br.startswith("stream/"):
+        return "", []
+    main_tag = "archive/" + br
+    rc, out = run_git(C.REPO_ROOT, ["tag", "-l", main_tag + "*"])
+    tags = [t.strip() for t in out.splitlines() if t.strip()] if rc == 0 else []
+    return (main_tag if main_tag in tags else ""), [t for t in tags if t != main_tag]
+
+
+def _git_blobs(ref, paths):
+    """{路径: 文本} -- 一次 cat-file --batch 读完 (档案几百个文件, 不逐个起 git)."""
+    if not paths:
+        return {}
+    spec = "".join("%s:%s\n" % (ref, x) for x in paths).encode("utf-8")
+    try:
+        p = subprocess.run(["git", "cat-file", "--batch"], cwd=C.REPO_ROOT, input=spec, capture_output=True,
+                           timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    out, data, i = {}, p.stdout, 0
+    for path in paths:
+        nl = data.find(b"\n", i)
+        if nl < 0:
+            break
+        head = data[i:nl].split()
+        i = nl + 1
+        if len(head) < 3 or head[1] != b"blob":
+            continue
+        n = int(head[2])
+        out[path] = data[i:i + n].decode("utf-8", "replace")
+        i += n + 1
+    return out
+
+
+def _mods_in(texts):
+    """{基座模块: [出现的文件]} -- 规则同 _base_imports (顶层名在基座仓库里存在、且不是 streams)."""
+    mods = {}
+    for path, text in texts.items():
+        for m in _IMPORT_RE.finditer(text):
+            mod = m.group(1) or m.group(2)
+            top = mod.split(".")[0]
+            if top == "streams":
+                continue
+            if os.path.isdir(os.path.join(C.REPO_ROOT, top)) or os.path.isfile(os.path.join(C.REPO_ROOT, top + ".py")):
+                mods.setdefault(mod, []).append(path)
+    return mods
+
+
+def _resolve(expr, assigns, depth=3, seen=None):
+    """expr 里出现的标识符若在同文件有赋值, 把赋值表达式拼进来 (至多 depth 层). 取最近一次以前的赋值太贵, 取最后一次."""
+    seen = set() if seen is None else seen
+    out = [expr]
+    if depth <= 0:
+        return expr
+    for ident in _IDENT_RE.findall(expr):
+        if ident in seen or ident not in assigns:
+            continue
+        seen.add(ident)
+        out.append(_resolve(assigns[ident], assigns, depth - 1, seen))
+    return " ".join(out)
+
+
+def _write_kind(line, name=""):
+    consts = sorted(set(_PATH_CONST_RE.findall(line)))
+    low = line.replace("\\", "/").lower()
+    if "DATA_ROOT" in consts or "stockdata" in low or any(c in consts for c in ("AUXILIARY_DIR", "RAW_FACTORS_DIR",
+                                                                                   "BARRA_DIR", "FACTOR_STORE_V2_DIR")):
+        kind = "数据根"
+    elif "PROJECT_ROOT" in consts and "results" in low:
+        kind = "基座 results (H-108 前写进基座检出)"
+    elif "RESULTS_DIR" in consts or "LOGS_DIR" in consts:
+        kind = "研究库 results / logs"
+    elif ("streams/" + name) in low or ("streams', '" + name) in low or ('streams", "' + name) in low:
+        kind = "线目录 streams/%s (H-108 前在基座检出里)" % name if "PROJECT_ROOT" in consts else "线目录 streams/%s" % name
+    elif "__file__" in line:
+        kind = "脚本旁 (相对 __file__)"
+    elif "PROJECT_ROOT" in consts:
+        kind = "基座检出下 (PROJECT_ROOT)"
+    elif "tempfile" in low or "tmp_path" in low or "mkdtemp" in low:
+        kind = "临时目录"
+    elif consts:
+        kind = "路径常量 " + ", ".join(consts)
+    else:
+        kind = "追不到 (调用方传入 / 运行时拼出)"
+    return kind, consts
+
+
+def _suspect_writes(texts, name="", limit=2000):
+    rows = []
+    for path in sorted(texts):
+        if not path.endswith(".py") or path.startswith("tests/"):
+            continue
+        lines = texts[path].splitlines()
+        assigns = {}
+        for line in lines:
+            if line.lstrip().startswith("#"):
+                continue
+            m = _ASSIGN_RE.match(line)
+            if m and not line.lstrip().startswith(("def ", "async def ")):
+                assigns[m.group(1)] = m.group(2)
+            for a, d in _DEFAULT_RE.findall(line):     # def f(out_dir=STATE_DIR) / add_argument("--out-dir", default=...)
+                assigns.setdefault(a.replace("-", "_"), d)
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith("#") or not _WRITE_RE.search(line):
+                continue
+            up = []                                              # 路径常与写调用分行拼: 带上至多 3 行上文,
+            for j in range(i - 1, max(-1, i - 4), -1):           # 碰到另一个写调用就停 (不借别人的路径)
+                if _WRITE_RE.search(lines[j]):
+                    break
+                if not lines[j].lstrip().startswith("#"):
+                    up.insert(0, lines[j])
+            ctx = " ".join(up + [line])
+            resolved = _resolve(ctx, assigns)
+            kind, consts = _write_kind(resolved, name)
+            lits = [x for x in _STR_RE.findall(resolved) if ("/" in x or "." in x) and " " not in x
+                    and not x.startswith(".")][:4]
+            rows.append({"file": path, "line": i + 1, "code": line.strip()[:200], "kind": kind, "hints": lits})
+            if len(rows) >= limit:
+                return rows, True
+    return rows, False
+
+
+def _origin_scan(name, tag, tag_sha):
+    key = (name, tag_sha)
+    if key in _ORIGIN_CACHE:
+        return _ORIGIN_CACHE[key]
+    roots = ["streams/%s" % name, "tests/streams/%s" % name]
+    rc, out = run_git(C.REPO_ROOT, GIT_NOQUOTE + ["ls-tree", "-r", "--name-only", tag, "--"] + roots)
+    files = [l.strip() for l in out.splitlines() if l.strip()] if rc == 0 else []
+    texts = _git_blobs(tag, [f for f in files if f.endswith(".py")])
+    mods = _mods_in(texts)
+    writes, truncated = _suspect_writes(texts, name)
+    rc, mb = run_git(C.REPO_ROOT, ["merge-base", "main", tag])
+    outside = []
+    if rc == 0 and mb.strip():
+        rc, out = run_git(C.REPO_ROOT, GIT_NOQUOTE + ["diff", "--name-only", mb.strip(), tag])
+        outside = [l.strip() for l in out.splitlines()
+                   if l.strip() and not any(l.strip().startswith(r + "/") for r in roots)] if rc == 0 else []
+    res = {"files": files, "mods": mods, "writes": writes, "writes_truncated": truncated,
+           "outside": outside, "merge_base": mb.strip()[:8] if rc == 0 else ""}
+    _ORIGIN_CACHE[key] = res
+    return res
+
+
+def _mod_exists_on_main(mod):
+    base = mod.replace(".", "/")
+    for cand in (base + ".py", base + "/__init__.py", base):
+        rc, _ = run_git(C.REPO_ROOT, ["cat-file", "-e", "main:" + cand])
+        if rc == 0:
+            return True
+    parent = base.rsplit("/", 1)[0] if "/" in base else ""     # from pkg.mod import Name: Name 可能是属性
+    return bool(parent) and run_git(C.REPO_ROOT, ["cat-file", "-e", "main:" + parent + ".py"])[0] == 0
+
+
+def _dir_count(path):
+    if not path or not os.path.isdir(path):
+        return None
+    n = 0
+    for _dp, dn, fn in os.walk(path):
+        dn[:] = [d for d in dn if d not in (".git", "__pycache__")]
+        n += len(fn)
+        if n > 100000:
+            break
+    return n
+
+
+@app.route("/api/research/origin")
+def api_research_origin():
+    """研究库详情 "来历": stream 时期的档案 / 依赖 / 资产 (见本节注释)."""
+    name = request.args.get("name") or ""
+    reg = _research_registry()
+    if name not in reg:
+        return jsonify({"error": "登记册里没有 %s" % name}), 404
+    entry = reg[name] or {}
+    repo = _research_path(entry, name)
+    exists = bool(repo) and os.path.isdir(os.path.join(repo, ".git"))
+    tag, other_tags = _legacy_tags(entry)
+    snap_rel = str(entry.get("main_snapshot") or "")
+    res = {"name": name, "legacy_branch": entry.get("legacy_branch") or "", "tag": tag, "other_tags": [],
+           "main_snapshot": snap_rel, "snapshot_files": None, "tag_info": None, "commits": [], "files": [],
+           "outside": [], "deps": [], "writes": [], "writes_truncated": False, "assets": []}
+    for t in other_tags:
+        rc, line = run_git(C.REPO_ROOT, ["log", "-1", "--format=%h %cs %s", t])
+        res["other_tags"].append({"tag": t, "line": line.strip() if rc == 0 else ""})
+    if snap_rel:
+        rc, out = run_git(C.REPO_ROOT, GIT_NOQUOTE + ["ls-tree", "-r", "--name-only", "main", "--", snap_rel])
+        res["snapshot_files"] = len([l for l in out.splitlines() if l.strip()]) if rc == 0 else None
+
+    scan = None
+    if tag:
+        rc, sha = run_git(C.REPO_ROOT, ["rev-list", "-n", "1", tag])
+        sha = sha.strip()
+        rc, line = run_git(C.REPO_ROOT, ["log", "-1", "--format=%h%x09%cs%x09%s", tag])
+        parts = line.strip().split("\t", 2) if rc == 0 else []
+        res["tag_info"] = {"sha": sha, "short": parts[0] if parts else "", "date": parts[1] if len(parts) > 1 else "",
+                           "subject": parts[2] if len(parts) > 2 else ""}
+        rc, out = run_git(C.REPO_ROOT, ["log", "-20", "--format=%h %cs %s", tag, "--",
+                                        "streams/%s" % name, "tests/streams/%s" % name])
+        res["commits"] = [l for l in out.splitlines() if l.strip()] if rc == 0 else []
+        scan = _origin_scan(name, tag, sha)
+        res["files"] = scan["files"]
+        res["outside"] = scan["outside"][:300]
+        res["outside_total"] = len(scan["outside"])
+        res["merge_base"] = scan["merge_base"]
+        res["writes"], res["writes_truncated"] = scan["writes"], scan["writes_truncated"]
+
+    # 依赖: 现在 vs 存档; pin 之后是否改过 (同影响提示判据); main 上是否还在
+    now, pin_files = {}, set()
+    if exists:
+        rc, head = run_git(repo, ["rev-parse", "HEAD"])
+        now = {m: True for m in _base_imports(repo, head.strip() if rc == 0 else "")}
+        pin = _read_pin(repo)
+        if pin:
+            _behind, hits, _soft = _impact(repo, head.strip(), pin)
+            pin_files = {m for m, _f in hits}
+    then = (scan or {}).get("mods") or {}
+    for mod in sorted(set(now) | set(then)):
+        res["deps"].append({"module": mod, "now": mod in now, "then": mod in then,
+                            "then_files": sorted(set(then.get(mod) or []))[:5], "changed_since_pin": mod in pin_files,
+                            "on_main": _mod_exists_on_main(mod)})
+
+    # 资产: 血缘节点 / 研究库产出目录 / 冻结快照里的结果
+    snap = _lineage_snap()
+    owners = _owner_map()
+    for n in entry.get("lineage_nodes") or []:
+        row = _node_row(snap, n, owners)
+        res["assets"].append({"kind": "血缘节点", "label": n, "status": row.get("status") or "快照里没有",
+                              "fresh": row["fresh"], "detail": row.get("endpoint") or ""})
+    for r in getattr(C, "ARTIFACT_ROOTS", []):
+        if r.get("stream") == name and not r.get("virtual"):
+            res["assets"].append({"kind": "研究库产出", "label": r.get("label"), "path": r.get("path"),
+                                  "art_key": r["key"], "files": _dir_count(r.get("path"))})
+    for sub in ("results", "reports", "outputs", "state"):
+        rel = "%s/%s" % (snap_rel, sub) if snap_rel else ""
+        if rel and os.path.isdir(os.path.join(C.REPO_ROOT, *rel.split("/"))):
+            res["assets"].append({"kind": "冻结快照", "label": rel, "path": os.path.join(C.REPO_ROOT, *rel.split("/")),
+                                  "files": _dir_count(os.path.join(C.REPO_ROOT, *rel.split("/")))})
+    return jsonify(res)
+
+
+_ORIGIN_PATH_RE = re.compile(r"^(?:tests/)?streams/[a-z0-9_]+/[^\0]*$")
+
+
+@app.route("/api/research/origin_file")
+def api_research_origin_file():
+    """存档标签里某个文件的原文 (只许本库的 streams/<名字>/ 与 tests/streams/<名字>/ 下, 或线目录外改过的文件)."""
+    name, path = request.args.get("name") or "", request.args.get("path") or ""
+    reg = _research_registry()
+    if name not in reg:
+        return jsonify({"error": "登记册里没有 %s" % name}), 404
+    tag, _ = _legacy_tags(reg[name])
+    if not tag:
+        return jsonify({"error": "%s 没有存档标签" % name}), 404
+    if ".." in path.split("/") or path.startswith("/") or ":" in path:
+        return jsonify({"error": "路径不合规"}), 400
+    rc, sha = run_git(C.REPO_ROOT, ["rev-list", "-n", "1", tag])
+    scan = _origin_scan(name, tag, sha.strip())
+    if path not in scan["files"] and path not in scan["outside"]:
+        return jsonify({"error": "不是本库存档里的文件: %s" % path}), 400
+    text = _git_blobs(tag, [path]).get(path)
+    if text is None:
+        return jsonify({"error": "存档里读不到 %s (可能已删除)" % path}), 404
+    return jsonify({"tag": tag, "path": path, "text": text[:400000], "truncated": len(text) > 400000})
+
+
 @app.route("/api/research/new", methods=["POST"])
 def api_research_new():
     """新建研究库: 校验名字后作为受管进程跑 C.RESEARCH_NEW_CMD (cwd = REPO_ROOT), 日志在进程页."""
