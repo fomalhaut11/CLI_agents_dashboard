@@ -218,7 +218,11 @@ def api_streams():
         if info["branch"] == "(detached)":   # 游离: 停在某提交上, 不在任何分支上 -> 标出停在哪 + 用途
             rc, head = run_git(info["path"], ["rev-parse", "--short=8", "HEAD"]) if info["ok"] else (1, "")
             info["head"] = head.strip() if rc == 0 else ""
-            info["role"] = roles.get(info["name"], "")
+            role = roles.get(info["name"], "")   # 说明字符串, 或 {"label": 卡片标题, "note": 说明}
+            if isinstance(role, dict):
+                info["role_label"], info["role"] = role.get("label", ""), role.get("note", "")
+            else:
+                info["role_label"], info["role"] = "", role
         out.append(info)
     active = sum(1 for x in out if x["branch"] not in ("main", "(detached)") and x["meta"]["status"] == "ACTIVE")
     return jsonify({"streams": out, "wip_active": active, "pins_hidden": pins_hidden})

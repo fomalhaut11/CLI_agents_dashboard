@@ -258,9 +258,10 @@ function card(s){
   const det=s.branch==="(detached)";   // 游离 HEAD: 停在某提交上, 不在分支上 (日更钉住的检出 / 待删的旧工作树等)
   const stb=s.branch==="main"||det?"":`<span class="badge st-${s.meta.status}">${s.meta.status}</span>`;
   const p=s.path.replace(/\\/g,"\\\\");
-  const head=det?`<span class="branch" title="游离 (detached HEAD): 停在这个提交上, 不在任何分支上">钉 ${esc(s.head||"?")}</span>`
+  const head=det?`<span class="branch" title="游离 (detached HEAD): 锁定在提交 ${esc(s.head||"?")} 上, 不在任何分支上, 不随 main 变">${esc(s.role_label||"固定版本")}</span>`
     :`<span class="branch">${s.branch}</span>`;
-  const role=det?`<div class="guard"><span class="g-ok">${esc(s.role||"游离工作区: 停在某提交上, 不在分支上 (用途未登记: config.py DETACHED_ROLES)")}</span></div>`:"";
+  const sync=s.behind?`落后 main ${s.behind}`:"与 main 同步";
+  const role=det?`<div class="guard"><span class="g-ok">锁定版本 ${esc(s.head||"?")} · ${sync}</span><br>${esc(s.role||"用途未登记: config DETACHED_ROLES / detachedRoles")}</div>`:"";
   return `<div class="card" data-path="${s.path}">
     <div class="row1">${head}<span class="name">${s.name}</span>${det?"":statusSel(s)}</div>
     <div class="badges">${clean}${ahead}${behind}${stb}</div>

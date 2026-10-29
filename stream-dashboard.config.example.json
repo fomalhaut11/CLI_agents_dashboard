@@ -19,7 +19,7 @@
 
   "frozenPrefixes": [],
   "detachedRoles": {},
-  "_detachedRoles": "游离 (detached HEAD) worktree 的用途说明, {目录名: 说明}; 卡片显示 \"钉 <提交>\" + 说明。basePinsRoot 下的 pin 检出不列卡片。",
+  "_detachedRoles": "游离 (detached HEAD) worktree 的用途说明, {目录名: 说明 或 {\"label\": 卡片标题, \"note\": 说明}}; 卡片标题 = label (缺省 \"固定版本\"), 下行 \"锁定版本 <提交> · 与 main 同步 / 落后 main N\" + 说明。basePinsRoot 下的 pin 检出不列卡片。",
   "_frozenPrefixes": "只读冻结区前缀 (如研究线迁出后的快照目录 [\"streams/\", \"tests/streams/\"]); 非 main 分支改到 = 越界。",
 
   "registryPaths": [],
