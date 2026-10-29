@@ -18,6 +18,8 @@
   "_corePrefixes": "共享核心白名单前缀; stream 分支改到这些 = 应走 main。streamFolder 为空 (没有 stream 分支, 本仓分支都是基座开发线) 时只标注不告警。",
 
   "frozenPrefixes": [],
+  "detachedRoles": {},
+  "_detachedRoles": "游离 (detached HEAD) worktree 的用途说明, {目录名: 说明}; 卡片显示 \"钉 <提交>\" + 说明。basePinsRoot 下的 pin 检出不列卡片。",
   "_frozenPrefixes": "只读冻结区前缀 (如研究线迁出后的快照目录 [\"streams/\", \"tests/streams/\"]); 非 main 分支改到 = 越界。",
 
   "registryPaths": [],

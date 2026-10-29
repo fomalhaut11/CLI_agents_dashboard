@@ -61,7 +61,7 @@ cp stream-dashboard.config.example.json stream-dashboard.config.json
 | `STREAM_DASHBOARD_PTY` | `winpty` 回滚到旧终端后端(需 `pip install pywinpty`) |
 | `NODE_EXE` / `PYTHON` | 指定 node / python 解释器 |
 
-关键字段速览(完整见示例文件注释):`repoRoot` / `streamFolder`(分支→专属文件夹)/ `corePrefixes`(共享白名单)/ `frozenPrefixes`(只读冻结区)/ `quickCommands` / `jobCommands` / `artifacts`(产出根,支持 `worktrees` 自动生成)/ `keyDatasets`。
+关键字段速览(完整见示例文件注释):`repoRoot` / `streamFolder`(分支→专属文件夹)/ `corePrefixes`(共享白名单)/ `frozenPrefixes`(只读冻结区)/ `detachedRoles`(游离工作树用途; 卡片显示"钉 <提交>"+说明, pin 检出不列)/ `quickCommands` / `jobCommands` / `artifacts`(产出根,支持 `worktrees` 自动生成)/ `keyDatasets`。
 
 ## 终端后端(ConPTY 修复)
 

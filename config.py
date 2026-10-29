@@ -137,6 +137,7 @@ STREAM_FOLDER = _get("streamFolder", {})           # {branch: 专属文件夹}
 FACTOR_STREAM = _get("factorStream", "")           # 因子型 stream 分支(例外规则), 无则空
 CORE_PREFIXES = _get("corePrefixes", [])           # 共享核心白名单前缀
 FROZEN_PREFIXES = _get("frozenPrefixes", [])       # 只读冻结区前缀: 任何非 main 分支改到 = 越界
+DETACHED_ROLES = _get("detachedRoles", {})         # 游离 (detached HEAD) worktree 用途说明 {目录名: 说明}
 REGISTRY_PATHS = _get("registryPaths", [])         # 共享单文件注册表(改动应走 main)
 
 QUICK_COMMANDS = _get("quickCommands", [           # 通用 git 默认; 项目可覆盖

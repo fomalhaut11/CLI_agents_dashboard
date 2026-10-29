@@ -205,13 +205,23 @@ def index():
 @app.route("/api/streams")
 def api_streams():
     meta = load_json(C.STREAM_META_FILE, {})
-    out = []
+    pins_root = getattr(C, "BASE_PINS_ROOT", None)
+    pins_pre = _norm(pins_root) + os.sep if pins_root else None
+    roles = getattr(C, "DETACHED_ROLES", None) or {}
+    out, pins_hidden = [], 0
     for wt in list_worktrees():
+        if pins_pre and _norm(wt.get("path")).startswith(pins_pre):
+            pins_hidden += 1            # 研究库的 pin 检出: 研究页签 / 基座总览管, 不当开发线列卡片
+            continue
         info = worktree_info(wt)
         info["meta"] = meta.get(info["branch"], {"status": "ACTIVE", "note": ""})
+        if info["branch"] == "(detached)":   # 游离: 停在某提交上, 不在任何分支上 -> 标出停在哪 + 用途
+            rc, head = run_git(info["path"], ["rev-parse", "--short=8", "HEAD"]) if info["ok"] else (1, "")
+            info["head"] = head.strip() if rc == 0 else ""
+            info["role"] = roles.get(info["name"], "")
         out.append(info)
-    active = sum(1 for x in out if x["branch"] != "main" and x["meta"]["status"] == "ACTIVE")
-    return jsonify({"streams": out, "wip_active": active})
+    active = sum(1 for x in out if x["branch"] not in ("main", "(detached)") and x["meta"]["status"] == "ACTIVE")
+    return jsonify({"streams": out, "wip_active": active, "pins_hidden": pins_hidden})
 
 
 # ---------------- 路由: git 安全操作 + diff + 分文件提交 ----------------

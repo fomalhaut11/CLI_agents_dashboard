@@ -253,20 +253,24 @@ function card(s){
   const clean=dirty===0?'<span class="badge clean">clean</span>':`<span class="badge dirty">脏 ${dirty}</span>`;
   const ahead=s.ahead?`<span class="badge ahead">领先 ${s.ahead}</span>`:"";
   const behind=s.behind?`<span class="badge behind">落后 ${s.behind}</span>`:"";
-  const stb=s.branch==="main"?"":`<span class="badge st-${s.meta.status}">${s.meta.status}</span>`;
+  const det=s.branch==="(detached)";   // 游离 HEAD: 停在某提交上, 不在分支上 (日更钉住的检出 / 待删的旧工作树等)
+  const stb=s.branch==="main"||det?"":`<span class="badge st-${s.meta.status}">${s.meta.status}</span>`;
   const p=s.path.replace(/\\/g,"\\\\");
+  const head=det?`<span class="branch" title="游离 (detached HEAD): 停在这个提交上, 不在任何分支上">钉 ${esc(s.head||"?")}</span>`
+    :`<span class="branch">${s.branch}</span>`;
+  const role=det?`<div class="guard"><span class="g-ok">${esc(s.role||"游离工作区: 停在某提交上, 不在分支上 (用途未登记: config.py DETACHED_ROLES)")}</span></div>`:"";
   return `<div class="card" data-path="${s.path}">
-    <div class="row1"><span class="branch">${s.branch}</span><span class="name">${s.name}</span>${statusSel(s)}</div>
+    <div class="row1">${head}<span class="name">${s.name}</span>${det?"":statusSel(s)}</div>
     <div class="badges">${clean}${ahead}${behind}${stb}</div>
-    ${s.branch==="main"?"":guardHtml(s.guard)}
+    ${s.branch==="main"?"":(det?role:guardHtml(s.guard))}
     <div class="commits">${s.commits.map(c=>"· "+esc(c)).join("<br>")}</div>
     <div class="actions">
       <button class="primary" onclick="openTerminal('${p}')">终端</button>
       <button onclick="openSessions('${p}','${esc(s.branch)}')">会话</button>
       <button onclick="openDiff('${p}','${esc(s.branch)}')">改动${dirty?` (${dirty})`:""}</button>
       <button onclick="gitOp('${p}','fetch')">fetch</button>
-      <button onclick="gitOp('${p}','pull')">pull</button>
-      ${s.branch==="main"||!s.behind?"":`<button class="primary" onclick="syncMain('${p}','${esc(s.branch)}',${s.behind},${dirty})">同步 main (${s.behind})</button>`}
+      ${det?"":`<button onclick="gitOp('${p}','pull')">pull</button>`}
+      ${s.branch==="main"||det||!s.behind?"":`<button class="primary" onclick="syncMain('${p}','${esc(s.branch)}',${s.behind},${dirty})">同步 main (${s.behind})</button>`}
       <button onclick="gitOp('${p}','log')">log</button>
     </div></div>`;
 }
@@ -275,7 +279,7 @@ async function refreshStreams(){
     const d=await jget("/api/streams");
     document.getElementById("cards").innerHTML=d.streams.map(card).join("");
     const wb=document.getElementById("wipbar");
-    wb.textContent=`活跃 stream (WIP): ${d.wip_active} / 建议 ≤2`;
+    wb.textContent=`活跃开发分支 (WIP): ${d.wip_active} / 建议 ≤2`+(d.pins_hidden?` · 研究库 pin 检出 ${d.pins_hidden} 个不列 (见研究页签)`:"");
     wb.className="wipbar"+(d.wip_active>2?" warn":"");
     document.getElementById("meta").textContent=d.streams.length+" worktree · "+new Date().toLocaleTimeString();
     if(activePath) document.querySelectorAll(".card").forEach(c=>c.classList.toggle("active",c.dataset.path===activePath));
