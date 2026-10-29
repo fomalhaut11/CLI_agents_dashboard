@@ -21,3 +21,4 @@ stream-dashboard.config.local.json
 Thumbs.db
 
 _lineage_snapshot.json
+_remote_*.json

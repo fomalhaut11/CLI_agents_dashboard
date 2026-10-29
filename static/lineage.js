@@ -18,7 +18,7 @@ function linRunCls(n){ const r = n.last_run; if (!r) return ""; return "run-" + 
 async function loadLineage(){
   const wrap = document.getElementById("lineagewrap");
   if (!wrap) return;
-  const d = await jget("/api/data/lineage");
+  const d = await jget("/api/data/lineage" + (typeof dataMQ === "function" ? dataMQ() : ""));
   if (!d || !d.nodes) {
     wrap.innerHTML = `<div class="linhead"><b>血缘点亮图</b>
       <span class="dim">尚无快照。</span>
@@ -34,6 +34,7 @@ async function loadLineage(){
 }
 
 async function refreshLineage(){
+  if (typeof dataMachine !== "undefined" && dataMachine !== "local") { fetchRemoteData(); return; }   // 别的机器: 重拉数据包
   if (!activePath) { toast("先在 Streams 页点某条线的「终端」选个 worktree (日更在哪跑就选哪)"); return; }
   const r = await jpost("/api/data/lineage/refresh", {path: activePath});
   if (r && r.rc === 0) toast("快照生成中 #" + r.id + ", 完成后点「重载」");

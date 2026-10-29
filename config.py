@@ -173,6 +173,8 @@ RESEARCH_INBOX = _opt_path("researchInbox")
 # 数据面板: (标签, 相对 DATA_ROOT 路径, 最大新鲜天数或 None); JSON 里是数组的数组
 KEY_DATASETS = [tuple(x) for x in _get("keyDatasets", [])]
 DIR_COUNTS = [tuple(x) for x in _get("dirCounts", [])]
+# 数据页 "机器" 切换: 别的机器 [{key, label, ssh, root, data_root, python, tmp, runs_dir}], 只读; 空 = 不显示切换
+REMOTE_DATA_MACHINES = _get("remoteDataMachines", [])
 
 # 产出查看器
 _ART = _get("artifacts", {})

@@ -818,6 +818,47 @@ const DATA_GROUP_HINT={
   product:"可消费的最终产物 (FactorStore / ML 输出 / 回测 / 单因子测试结果)。"
 };
 function setDataGroup(g){ dataGroup=g; loadData(); }
+// 数据页 "机器" 切换 (2026-10-29): 本机现算 / 别的机器 (如 .22) 读拉回的数据包 (只读, 不给管线与复检按钮)
+let dataMachine=(()=>{ try{ return localStorage.getItem("data-machine")||"local"; }catch(e){ return "local"; } })();
+function dataMQ(sep){ return dataMachine==="local"?"":(sep||"?")+"machine="+encodeURIComponent(dataMachine); }
+function setDataMachine(k){ dataMachine=k; try{ localStorage.setItem("data-machine",k); }catch(e){} loadData(); }
+function fmtAge(s){ if(s==null) return "?"; if(s<3600) return Math.round(s/60)+" 分钟"; if(s<172800) return Math.round(s/3600)+" 小时"; return Math.round(s/86400)+" 天"; }
+async function fetchRemoteData(){
+  const r=await jpost("/api/data/remote/refresh",{machine:dataMachine});
+  if(!(r&&r.rc===0)){ toast((r&&r.out)||"启动失败"); return; }
+  toast("拉取中 (进程 #"+r.id+", 远端约 5-10 分钟), 完成后自动刷新");
+  const id=r.id;
+  const poll=async()=>{
+    const p=(await jget("/api/proc/list")).find(x=>x.id===id);
+    if(p&&p.status==="running"){ setTimeout(poll,10000); return; }
+    toast(p&&p.rc===0?"数据包已更新":"拉取失败, 看进程页签日志");
+    if(document.getElementById("tab-data").classList.contains("active")) loadData();
+  };
+  setTimeout(poll,10000);
+}
+function machineBarHtml(ms){
+  if(ms.length<2) return "";
+  return `<div class="datahead machinebar"><span style="color:#8b949e;font-size:12px">机器:</span> `+ms.map(m=>
+    `<button class="${m.key===dataMachine?"primary":""}" onclick="setDataMachine('${esc(m.key)}')" title="${esc(m.data_root||"")}">${esc(m.label)}${
+      m.key!=="local"?` <span class="dim">${m.generated_at?esc(m.generated_at.slice(5,16)):"无数据包"}</span>`:""}</button>`).join(" ")+`</div>`;
+}
+function remoteHeadHtml(d, label){
+  const m=d.meta||{}, runs=d.runs||{};
+  const cm=m.code_mtime||{};
+  const rcs=r=>Object.keys(r||{}).map(k=>`<span class="${r[k]===0?"fresh":"stale"}">${esc(k.replace("wave","w"))}=${r[k]}</span>`).join(" ");
+  const logs=(runs.logs||[]).map(l=>`<tr><td>${esc(l.name)}</td><td>${esc(l.mtime)}</td><td>${l.size_kb} KB</td>
+    <td class="${l.ended?"fresh":"stale"}">${l.ended?"有 END":"未见 END"}</td><td>${rcs(l.rcs)}</td><td class="dim">${esc(l.last)}</td></tr>`).join("");
+  return `<div class="datahead"><div style="font-size:12px">
+      <b>${esc(label)}</b> (${esc(m.host||"")}) 数据根 <code>${esc(m.data_root||"")}</code> · 检出 <code>${esc(m.root||"")}</code><br>
+      数据包生成于 ${esc(m.generated_at||"?")} (远端耗时 ${m.seconds||"?"}s, 拉回 ${fmtAge(d.fetched_age_s)}前) ·
+      远端血缘定义 derived_data.yaml 改于 ${esc(cm["config/derived_data.yaml"]||"?")} · 执行器改于 ${esc(cm["tools/data_management/lineage_pipeline.py"]||"?")}
+      <span class="dim">(远端检出不是 git, 由 tools/deploy/sync_to_22.py 部署, 没有提交号)</span></div>
+      <button class="primary" onclick="fetchRemoteData()">拉取最新</button></div>
+    <div class="rs-hint">只读视图: 状态 / 终点取自数据包里的血缘快照 (远端检出 + 远端数据根上做 strict judge, 同 data scan)。
+      管线、复检等操作只在本机视图; ${esc(label)} 的日更由其计划任务跑。</div>
+    ${logs?`<details${runs.lock?" open":""}><summary>日更日志 ${esc(runs.dir||"")} ${runs.lock?`<span class="stale">锁文件在 (${esc(runs.lock)} 起, 可能正在跑)</span>`:""}</summary>
+      <table><tr><th>日志</th><th>最后写入</th><th>大小</th><th>结束</th><th>各步返回码</th><th>末行</th></tr>${logs}</table></details>`:""}`;
+}
 async function startContentScan(){
   const msg="启动内容级复检 (分组: "+dataGroup+")?\\n\\n会逐个读文件求“内容终点日”, 首次较慢;\\n"
     +"结果按 (路径,mtime,大小) 缓存, 文件没变的下次直接命中。\\n以 managed process 运行, 可在“进程”页看日志。";
@@ -856,7 +897,17 @@ function dataRowsHtml(rows){
   }).join("");
 }
 async function loadData(){
-  const d=await jget("/api/data/overview");
+  const ms=(await jget("/api/data/machines")).machines||[];
+  if(!ms.some(m=>m.key===dataMachine)) dataMachine="local";
+  const mlabel=(ms.find(m=>m.key===dataMachine)||{}).label||dataMachine;
+  const d=await jget("/api/data/overview"+dataMQ());
+  if(d.missing){
+    document.getElementById("datawrap").innerHTML=machineBarHtml(ms)+`<div class="datahead"><div>
+      ${esc(mlabel)} 还没有数据包${d.error?" ("+esc(d.error)+")":""}。拉取 = 把快照脚本推到 ${esc(mlabel)}、在那里的检出与数据根上只读跑一遍、
+      把结果拉回本机 (受管进程, 约 5-10 分钟, 进程页看日志)。</div><button class="primary" onclick="fetchRemoteData()">拉取</button></div>`;
+    return;
+  }
+  const remote=dataMachine!=="local";
   const counts=d.counts.map(c=>`<div class="datacard"><div class="k">${esc(c.label)}</div><div class="v">${c.count}</div></div>`).join("");
   const ver=`<div class="datacard"><div class="k">store_v2 激活版本</div><div class="v" style="font-size:14px">${esc(d.store_v2_version||"-")}</div></div>`;
   // 可移植版没有 config/derived_data.yaml, 退化成单组 + 只有 mtime 判, 页面照常能开
@@ -870,23 +921,23 @@ async function loadData(){
       <div style="font-size:11px;margin-top:2px">${bad?`<span class="stale">静止 ${g.stale} / 缺失 ${g.missing}</span>`:`<span class="fresh">全部活跃</span>`}</div>
     </div>`;
   }).join("");
-  const L=await jget("/api/data/layer?group="+encodeURIComponent(dataGroup));
-  document.getElementById("datawrap").innerHTML=`
+  const L=await jget("/api/data/layer?group="+encodeURIComponent(dataGroup)+dataMQ("&"));
+  document.getElementById("datawrap").innerHTML=machineBarHtml(ms)+(remote?remoteHeadHtml(d,mlabel):`
     <div class="datahead">
       <div style="color:#8b949e;font-size:12px">data_root: ${esc(d.data_root)} &nbsp;|&nbsp; 清单派生自 config/derived_data.yaml (勿手写)</div>
     </div>
-    ${pipePanelHtml()}
+    ${pipePanelHtml()}`)+`
     <div id="lineagewrap"></div>
     <div class="datacards">${gcards}</div>
     <div class="datacards">${ver}${counts}</div>
     <div class="datahead">
       <div style="color:#8b949e;font-size:12px">${esc(DATA_GROUP_HINT[dataGroup]||"")}</div>
-      <button onclick="startContentScan()">内容级复检</button>
+      ${remote?"":'<button onclick="startContentScan()">内容级复检</button>'}
       <span style="color:#8b949e;font-size:12px">${L.judged_at?`状态/终点取自血缘快照 (内容终点判, 同 data scan), 生成于: ${esc(L.judged_at)} -- 更新后点血缘图"刷新快照"`:`无血缘快照, 状态按 mtime 快判 (不可靠); 内容日期扫描于: ${esc(d.content_scanned_at||"从未")}`}</span>
     </div>
     <table><tr><th>数据集</th><th>${L.judged_at?"状态":"mtime 判"}</th><th>内容终点日</th><th>最后写入</th><th>频率</th><th>路径</th><th>生成器</th></tr>
       ${dataRowsHtml(L.rows||[])}</table>`;
-  pipePreview();
+  if(!remote) pipePreview();
   if(typeof loadLineage==="function") loadLineage();   // 血缘点亮图 (static/lineage.js)
 }
 

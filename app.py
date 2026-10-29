@@ -1829,9 +1829,93 @@ _proc_load()
 
 # ---------------- 路由: 数据管理可视化 ----------------
 
+# ---------------- 数据页 "机器" 切换 (2026-10-29): 别的机器 (如 .22) 的数据情况, 只读 ----------------
+# 远端数据包由 remote_fetch.py (受管进程) 在那台机器上跑 remote_snapshot.py 后拉回 _remote_<key>.json; 下面几个数据页
+# 接口带 ?machine=<key> 时读这个包, 不带 (或 local) 时照旧现算本机. 远端不给任何写操作 (不跑管线 / 复检).
+_REMOTE_CACHE = {}       # key -> (mtime, bundle)
+
+
+def _machines():
+    return {m["key"]: m for m in getattr(C, "REMOTE_DATA_MACHINES", None) or []}
+
+
+def _remote_bundle_path(key):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "_remote_%s.json" % key)
+
+
+def _remote_bundle(key):
+    """(包, 错误). 按文件 mtime 缓存."""
+    if key not in _machines():
+        return None, "未配置机器 %s" % key
+    p = _remote_bundle_path(key)
+    try:
+        mt = os.path.getmtime(p)
+    except OSError:
+        return None, ""
+    hit = _REMOTE_CACHE.get(key)
+    if not hit or hit[0] != mt:
+        try:
+            with open(p, encoding="utf-8") as f:
+                hit = (mt, json.load(f))
+        except (OSError, ValueError) as e:
+            return None, "数据包读不了: %s" % e
+        _REMOTE_CACHE[key] = hit
+    b = dict(hit[1])
+    b["fetched_age_s"] = int(time.time() - mt)
+    return b, ""
+
+
+def _machine_arg():
+    m = (request.args.get("machine") or "").strip()
+    return "" if m in ("", "local") else m
+
+
+@app.route("/api/data/machines")
+def api_data_machines():
+    out = [{"key": "local", "label": "本机", "data_root": C.DATA_ROOT}]
+    for k, m in _machines().items():
+        b, err = _remote_bundle(k)
+        meta = (b or {}).get("meta") or {}
+        out.append({"key": k, "label": m["label"], "data_root": m["data_root"], "ssh": m["ssh"],
+                    "generated_at": meta.get("generated_at"), "fetched_age_s": (b or {}).get("fetched_age_s"),
+                    "error": err})
+    return jsonify({"machines": out})
+
+
+@app.route("/api/data/remote/refresh", methods=["POST"])
+def api_data_remote_refresh():
+    """拉远端数据包: 受管进程跑 remote_fetch.py (推脚本 -> 远端只读跑 -> 拉回), 日志在进程页."""
+    key = ((request.get_json(silent=True) or {}).get("machine") or "").strip()
+    if key not in _machines():
+        return jsonify({"rc": 1, "out": "未配置机器 %s" % key}), 400
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "remote_fetch.py").replace("\\", "/")
+    pid, dup = _proc_start('python "%s" --machine %s' % (script, key), C.REPO_ROOT,
+                           "数据包 @ " + _machines()[key]["label"])
+    if pid is None:
+        return jsonify({"rc": 1, "dup": dup, "out": "已在 #%d 拉取中" % dup}), 409
+    return jsonify({"rc": 0, "id": pid})
+
+
+def _remote_or_error(key):
+    b, err = _remote_bundle(key)
+    if b is None:
+        return None, (jsonify({"missing": True, "machine": key, "error": err}), 200)
+    return b, None
+
+
 @app.route("/api/data/overview")
 def api_data_overview():
     """页面骨架: 三组概览卡 + 目录计数 + store_v2 版本. 明细走 /api/data/layer。"""
+    mk = _machine_arg()
+    if mk:
+        b, resp = _remote_or_error(mk)
+        if resp:
+            return resp
+        meta = b.get("meta") or {}
+        return jsonify({"machine": mk, "data_root": meta.get("data_root"), "counts": b.get("counts") or [],
+                        "store_v2_version": b.get("store_v2_version") or "", "groups": b.get("groups") or [],
+                        "lineage": meta.get("lineage_available", True), "content_scanned_at": "",
+                        "meta": meta, "runs": b.get("runs") or {}, "fetched_age_s": b.get("fetched_age_s")})
     root = C.DATA_ROOT
     counts = []
     for label, rel, suf in C.DIR_COUNTS:
@@ -1862,6 +1946,14 @@ def api_data_layer():
     group = request.args.get("group", "external")
     if group not in {k for k, _ in DL.GROUPS}:
         return jsonify({"error": "bad group"}), 400
+    mk = _machine_arg()
+    if mk:
+        b, resp = _remote_or_error(mk)
+        if resp:
+            return resp
+        ov = b.get("overview") or {}
+        return jsonify({"rows": [r for r in ov.get("rows") or [] if r.get("group") == group],
+                        "scanned_at": "", "judged_at": ov.get("judged_at", "")})
     return jsonify(DL.overview(C.DATA_ROOT, group))
 
 
@@ -1890,6 +1982,15 @@ LINEAGE_SNAPSHOT = getattr(C, "LINEAGE_SNAPSHOT",
 @app.route("/api/data/lineage")
 def api_data_lineage():
     """血缘快照 (节点 / wave / 上游 / strict 判定 / 内容终点 / 最近运行)。没有快照时返回 {missing: true}。"""
+    mk = _machine_arg()
+    if mk:
+        b, resp = _remote_or_error(mk)
+        if resp:
+            return resp
+        snap = dict(b.get("lineage") or {})
+        snap["snapshot_age_s"] = b.get("fetched_age_s")
+        snap["machine"] = mk
+        return jsonify(snap)
     try:
         with open(LINEAGE_SNAPSHOT, encoding="utf-8") as f:
             snap = json.load(f)
