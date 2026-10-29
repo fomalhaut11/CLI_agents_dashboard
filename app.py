@@ -564,6 +564,135 @@ def api_research_new():
     return jsonify({"rc": 0, "cmd": cmd_tpl.format(name=name), "path": C.REPO_ROOT})
 
 
+# ---------------- 路由: 升级 pin 页面化 (2026-10-29) ----------------
+# 三步都调基座 pin 工具 (C.RESEARCH_PIN_CMD, 如 "python tools/research_pin.py"; cwd = REPO_ROOT), 页面不自己改研究库:
+#   对照 trial <库> <sha> --execute       受管进程 (跑旧 / 新 pin 下本库测试 + import 判定), 报告落 <pin 检出根>/_trials/<库>/
+#   提交 upgrade <库> <sha> --commit --execute   要求同一 HEAD 上 verdict same 的对照报告, 在研究库提交 (带 Base-Pin-* 尾注)
+#   回退 revert <库> --execute            git revert 最近那次带尾注的升级提交 (仍是当前 pin 时)
+# 登记册 base_pin 是基座 main 上的共享文件, 页面不改 (提示去 main 改).
+_TRAILER_RE = re.compile(r"^Base-Pin-(Old|New): ([0-9a-f]{40})$", re.M)
+
+
+def _research_repo_or_error(name):
+    reg = _research_registry()
+    if name not in reg:
+        return None, "登记册里没有 %s" % name
+    repo = _research_path(reg[name], name)
+    if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+        return None, "本机没有研究库 %s" % name
+    return repo, ""
+
+
+def _trial_brief(t, pin, head):
+    tests, imps = t.get("tests") or {}, t.get("imports") or {}
+
+    def side(d, key):
+        return {"ran": bool(d.get("ran")), "n": len(d.get(key) or []), "summary": d.get("summary") or d.get("note") or ""}
+
+    return {"old": t.get("old", ""), "new": t.get("new", ""), "label": t.get("new_label", ""),
+            "verdict": t.get("verdict", ""), "started": t.get("started", ""), "seconds": t.get("seconds"),
+            "repo_head": t.get("repo_head", ""), "repo_dirty": bool(t.get("repo_dirty")),
+            "tests": {"old": side(tests.get("old") or {}, "bad"), "new": side(tests.get("new") or {}, "bad"),
+                      "only_new": tests.get("only_new") or [], "only_old": tests.get("only_old") or []},
+            "imports": {"old": side(imps.get("old") or {}, "hits"), "new": side(imps.get("new") or {}, "hits"),
+                        "only_new": imps.get("only_new") or [], "only_old": imps.get("only_old") or []},
+            "usable": (t.get("verdict") == "same" and t.get("old") == pin and t.get("repo_head") == head
+                       and not t.get("repo_dirty"))}
+
+
+@app.route("/api/research/pin_state")
+def api_research_pin_state():
+    """升级 pin 区块: 可选的基座提交 (pin..main) + 本库的对照报告 (新到旧) + 最近一次可回退的升级提交."""
+    name = request.args.get("name") or ""
+    repo, err = _research_repo_or_error(name)
+    if err:
+        return jsonify({"error": err}), 404
+    pin = _read_pin(repo)
+    rc, head = run_git(repo, ["rev-parse", "HEAD"])
+    head = head.strip() if rc == 0 else ""
+    rc, st = run_git(repo, ["status", "--porcelain"])
+    commits = []
+    if pin:
+        rc, out = run_git(C.REPO_ROOT, ["log", "--format=%H\t%cs\t%s", "-40", "%s..main" % pin])
+        for line in (out.splitlines() if rc == 0 else []):
+            parts = line.split("\t", 2)
+            if len(parts) == 3:
+                commits.append({"sha": parts[0], "date": parts[1], "subject": parts[2]})
+    trials = []
+    pins_root = getattr(C, "BASE_PINS_ROOT", None)
+    tdir = os.path.join(pins_root, "_trials", name) if pins_root else ""
+    if tdir and os.path.isdir(tdir):
+        files = sorted((os.path.join(tdir, f) for f in os.listdir(tdir) if f.endswith(".json")),
+                       key=os.path.getmtime, reverse=True)[:8]
+        for f in files:
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    trials.append(_trial_brief(json.load(fh), pin, head))
+            except (OSError, ValueError):
+                continue
+    last = None
+    rc, out = run_git(repo, ["log", "-1", "--format=%H%n%cs %s%n%B", "--grep", "^Base-Pin-New: "])
+    if rc == 0 and out.strip():
+        lines = out.splitlines()
+        tr = dict(_TRAILER_RE.findall("\n".join(lines[2:])))
+        if "Old" in tr and "New" in tr:
+            last = {"commit": lines[0].strip(), "line": lines[1].strip() if len(lines) > 1 else "",
+                    "old": tr["Old"], "new": tr["New"], "revertable": tr["New"] == pin}
+    return jsonify({"name": name, "pin": pin, "head": head, "dirty": bool(st.strip()), "commits": commits,
+                    "trials": trials, "last_upgrade": last, "enabled": bool(getattr(C, "RESEARCH_PIN_CMD", None))})
+
+
+def _pin_cmd(*args):
+    return " ".join([C.RESEARCH_PIN_CMD] + list(args))
+
+
+def _pin_args_or_error(b, need_rev=True):
+    name, rev = (b.get("name") or "").strip(), (b.get("rev") or "").strip()
+    if not getattr(C, "RESEARCH_PIN_CMD", None):
+        return name, rev, "本面板未配置 pin 工具命令"
+    _repo, err = _research_repo_or_error(name)
+    if err:
+        return name, rev, err
+    if need_rev and not _SHA_ARG_RE.match(rev):
+        return name, rev, "rev 须是提交 sha"
+    return name, rev, ""
+
+
+@app.route("/api/research/pin_trial", methods=["POST"])
+def api_research_pin_trial():
+    """对照: 校验后返回命令, 前端以受管进程启动 (同 "+ 新建研究库"); 跑完前端再读 pin_state."""
+    name, rev, err = _pin_args_or_error(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"rc": 1, "out": err}), 400
+    return jsonify({"rc": 0, "cmd": _pin_cmd("trial", name, rev, "--execute"), "path": C.REPO_ROOT})
+
+
+def _run_pin_tool(*args):
+    cmd, env = _child_cmd_env(_pin_cmd(*args))
+    try:
+        p = subprocess.run(cmd, cwd=C.REPO_ROOT, shell=True, capture_output=True, env=env, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return jsonify({"rc": 1, "out": "跑不了 pin 工具: %s" % e})
+    return jsonify({"rc": p.returncode, "out": (p.stdout + p.stderr).decode("utf-8", "replace").strip()})
+
+
+@app.route("/api/research/pin_upgrade", methods=["POST"])
+def api_research_pin_upgrade():
+    """提交升级: pin 工具自己查对照报告 (同一 HEAD、verdict same), 不满足就拒绝; 页面不给 --force."""
+    name, rev, err = _pin_args_or_error(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"rc": 1, "out": err}), 400
+    return _run_pin_tool("upgrade", name, rev, "--commit", "--execute")
+
+
+@app.route("/api/research/pin_revert", methods=["POST"])
+def api_research_pin_revert():
+    name, _rev, err = _pin_args_or_error(request.get_json(silent=True) or {}, need_rev=False)
+    if err:
+        return jsonify({"rc": 1, "out": err}), 400
+    return _run_pin_tool("revert", name, "--execute")
+
+
 # ---------------- 路由: 基座总览 (2026-10-27; 设计稿 research_repos_design 5.5) ----------------
 # pin 分布: 各研究库钉在哪个基座提交, 落后 main 多少, 过旧高亮 (落后 > PIN_STALE_COMMITS 个提交或 > PIN_STALE_DAYS 天).
 # 影响预览: 选 main 上某次提交, 或某个基座 worktree 还没进 main 的改动 (main...HEAD + 未提交), 列出 import 了被改

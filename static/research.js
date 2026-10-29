@@ -1,7 +1,7 @@
 // ===== 研究页签 (2026-10-26): 读研究库登记册, 卡片 + 详情 =====
 // 研究库是独立 git 库, 钉基座某提交 (base.pin). 卡片的脏 / 提交只算本库; "pin 落后 main N" 是提示不是故障;
 // 影响提示 o = pin 之后基座改动没碰到本库 import 的模块, ! = 碰到了 (升级 pin 后需复核结果).
-// 没有 "同步 main" 按钮: 升级 pin 走基座 python tools/research_pin.py upgrade <库> <rev>.
+// 没有 "同步 main" 按钮: 升级 pin 在详情页 "升级 pin" 区块 (对照 -> 提交 -> 回退, 都调基座 tools/research_pin.py).
 let researchSel=null;
 
 function researchBadges(r){
@@ -74,9 +74,7 @@ async function researchDetail(name){
   const r=await jget("/api/research/detail?name="+encodeURIComponent(name));
   if(r.error){ box.innerHTML=esc(r.error); return; }
   if(!r.exists){ box.innerHTML="本机没有这个研究库"; return; }
-  const pinHint=r.pin_behind
-    ? `<div class="rs-hint">升级 pin (基座 main 检出里跑, 默认只打印计划):<br><code>python tools/research_pin.py prepare main</code> → 用新 PYTHONPATH 跑本库测试与旧 pin 对照 → <code>python tools/research_pin.py upgrade ${esc(name)} main</code></div>`
-    : '<div class="rs-hint">pin 与基座 main 一致</div>';
+  const pinHint='<h4>升级 pin</h4><div id="rs-pin">加载中...</div>';
   const impact=r.impact_files&&r.impact_files.length
     ? `<h4>pin 之后改到本库 import 的基座文件 (${r.impact_files.length})</h4><pre class="rs-pre">${r.impact_files.map(esc).join("\n")}</pre>`
     : "";
@@ -96,6 +94,77 @@ async function researchDetail(name){
     ${pinLog}
     <h4>RESEARCH_SUMMARY</h4><div class="rs-summary md">${summary}</div>`;
   loadResearchRequests(name);
+  loadPinBox(name);
+}
+
+// ===== 升级 pin 页面化 (2026-10-29): 选基座提交 -> 对照 (旧 / 新 pin 下本库测试 + import 判定) -> 提交 -> 可一键回退 =====
+// 三步都跑基座 tools/research_pin.py (trial / upgrade --commit / revert); 提交要求同一 HEAD 上 "无新增失败" 的对照报告.
+function pinSide(s){ return s.ran ? `${s.n}${s.summary?" ("+esc(s.summary)+")":""}` : `未跑${s.summary?" ("+esc(s.summary)+")":""}`; }
+function pinDiffList(c){
+  const rows=c.only_new.map(x=>`+ 新 pin 才有  ${esc(x)}`).concat(c.only_old.map(x=>`- 旧 pin 才有  ${esc(x)}`));
+  return rows.length?`<pre class="rs-pre">${rows.join("\n")}</pre>`:"";
+}
+function pinTrialRow(t, pin){
+  const ok=t.verdict==="same";
+  const why=t.usable?"可提交":(t.old!==pin?"旧 pin 已不是当前 pin":(t.repo_dirty?"对照时工作区不干净":(!ok?"新 pin 下多出失败":"之后有新提交, 需重跑")));
+  return `<tr class="${ok?"":"rq-overdue"}"><td><code>${esc(t.old.slice(0,8))}</code> → <code>${esc(t.new.slice(0,8))}</code></td>
+    <td>${ok?"o 无新增失败":"! 有新增失败"}</td><td>${esc(t.started)}${t.seconds!=null?" · "+t.seconds+"s":""}</td>
+    <td>测试 旧 ${pinSide(t.tests.old)} / 新 ${pinSide(t.tests.new)}${pinDiffList(t.tests)}
+      <div>import 落空 旧 ${pinSide(t.imports.old)} / 新 ${pinSide(t.imports.new)}</div>${pinDiffList(t.imports)}</td>
+    <td>${t.usable?`<button class="primary" onclick="pinUpgrade('${esc(t.new)}')">提交升级</button>`:esc(why)}</td></tr>`;
+}
+async function loadPinBox(name){
+  const box=document.getElementById("rs-pin");
+  if(!box||researchSel!==name) return;
+  const d=await jget("/api/research/pin_state?name="+encodeURIComponent(name));
+  if(d.error){ box.innerHTML=`<div class="wipbar warn">${esc(d.error)}</div>`; return; }
+  const opts=d.commits.map((c,i)=>`<option value="${esc(c.sha)}">${esc(c.sha.slice(0,8))} ${esc(c.date)} ${esc(c.subject.slice(0,70))}${i===0?"  (main 最新)":""}</option>`).join("");
+  const pick=d.commits.length
+    ? `<div class="rq-form"><label>新 pin <select id="pin-rev">${opts}</select></label>
+        <div><button class="primary" ${d.enabled?"":"disabled"} onclick="pinTrial()">对照 (旧 pin vs 选中提交)</button></div>
+        <div class="rs-hint">对照 = 基座 <code>research_pin.py trial</code> 受管进程 (日志在进程页签): 同一份本库代码分别在旧 / 新 pin 下跑
+        tests/streams/${esc(name)} 与研究档位 import 判定, 新 pin 下没有多出失败才能提交。缺的 pin 检出会先建。${d.dirty?" <b>本库工作区不干净: 对照结论不能用于提交, 先在本库提交或清理。</b>":""}</div></div>`
+    : '<div class="rs-hint">pin 与基座 main 一致</div>';
+  const trials=d.trials.length
+    ? `<table class="rq-table"><tr><th>对照</th><th>结论</th><th>时间</th><th>细节</th><th></th></tr>${d.trials.map(t=>pinTrialRow(t,d.pin)).join("")}</table>` : "";
+  const lu=d.last_upgrade;
+  const last=lu
+    ? `<div class="rs-hint">最近一次页面/工具升级: <code>${esc(lu.commit.slice(0,8))}</code> ${esc(lu.line)}
+        (<code>${esc(lu.old.slice(0,8))}</code> → <code>${esc(lu.new.slice(0,8))}</code>)
+        ${lu.revertable&&d.enabled?` <button onclick="pinRevert()">回退到 ${esc(lu.old.slice(0,8))}</button>`:(lu.revertable?"":" · 之后 pin 已变, 不可一键回退")}</div>` : "";
+  box.innerHTML=pick+trials+last+(d.enabled?"":'<div class="rs-hint">本面板未配置 pin 工具命令 (researchPinCmd), 只读</div>')+
+    '<div class="rs-hint">登记册 config/research_repos.yaml 的 base_pin 在基座 main 上, 页面不改; 升级 / 回退后卡片会显示 "登记册不一致", 去 main 的 worktree 改。</div>';
+}
+async function pinTrial(){
+  const name=researchSel, rev=document.getElementById("pin-rev").value;
+  const j=await jpost("/api/research/pin_trial",{name,rev});
+  if(j.rc!==0){ toast(j.out||"拒绝"); return; }
+  await startProcAt(j.path,j.cmd,"pin 对照 "+name+" -> "+rev.slice(0,8));
+  const id=procSel;
+  toast("对照已启动 (进程 #"+id+"), 跑完自动刷新");
+  const box=document.getElementById("rs-pin");
+  if(box) box.insertAdjacentHTML("afterbegin",`<div class="wipbar" id="pin-running">对照进行中 (进程 #${id}, 日志在进程页签)...</div>`);
+  const poll=async()=>{
+    if(researchSel!==name) return;
+    const p=(await jget("/api/proc/list")).find(x=>x.id===id);
+    if(p&&p.status==="running"){ setTimeout(poll,5000); return; }
+    loadPinBox(name);
+  };
+  setTimeout(poll,5000);
+}
+async function pinUpgrade(rev){
+  const name=researchSel;
+  if(!confirm(`把 ${name} 的 base.pin 升到 ${rev.slice(0,8)} 并在本库提交?\n(改 base.pin / env.ps1 / .claude/settings.json / CLAUDE.md; 过本库研究档位门)`)) return;
+  const j=await jpost("/api/research/pin_upgrade",{name,rev});
+  alert((j.rc===0?"已提交\n\n":"失败\n\n")+(j.out||""));
+  researchDetail(name); loadResearch();
+}
+async function pinRevert(){
+  const name=researchSel;
+  if(!confirm(`回退 ${name} 最近一次 pin 升级 (git revert, 本库新增一个提交)?`)) return;
+  const j=await jpost("/api/research/pin_revert",{name});
+  alert((j.rc===0?"已回退\n\n":"失败\n\n")+(j.out||""));
+  researchDetail(name); loadResearch();
 }
 
 // ===== 晋升 (2026-10-27, H-106): 研究库发起 -> 基座跨线请求台账 (kind=promote) -> 基座开发页签的晋升队列 =====

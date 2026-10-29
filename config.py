@@ -155,6 +155,7 @@ RESEARCH_ROOT = os.path.normpath(_rroot) if _rroot else None
 _pins = _get("basePinsRoot", None)
 BASE_PINS_ROOT = os.path.normpath(_pins) if _pins else None
 RESEARCH_NEW_CMD = _get("researchNewCmd", None)    # "+ 新建研究库" 命令 ({name} 占位), 无则不显示按钮
+RESEARCH_PIN_CMD = _get("researchPinCmd", None)    # 详情 "升级 pin" 调的 pin 工具前缀 (接 trial / upgrade --commit / revert), 无则只读
 
 # 知识页签 (2026-10-26, knowledge.py): 台账所在仓库 (core/research/*.jsonl, core/factors/meta/factor_registry.json)
 # + 研报库目录 catalog.jsonl + 单因子测试归档目录 + 结论收件箱目录; 缺省 None -> 知识页签空态 / 对应子视图为空
