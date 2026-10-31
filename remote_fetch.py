@@ -9,7 +9,9 @@
 
 机器清单: config.REMOTE_DATA_MACHINES ({key, label, ssh, root, data_root, python, tmp, runs_dir}).
 
-    python tools/stream_dashboard/remote_fetch.py --machine 22
+--live (2026-10-31): 改拉实盘跟踪页签的数据包 -- 只推 live_snapshot.py, 远端几秒跑完, 拉回 _live_<key>.json.
+
+    python tools/stream_dashboard/remote_fetch.py --machine 22 [--live]
 """
 import argparse
 import json
@@ -26,6 +28,10 @@ SHIP = ("lineage_snapshot.py", "data_layers.py", "remote_snapshot.py")
 
 def bundle_path(key):
     return os.path.join(DASH_DIR, "_remote_%s.json" % key)
+
+
+def live_bundle_path(key):
+    return os.path.join(DASH_DIR, "_live_%s.json" % key)
 
 
 def machines():
@@ -76,15 +82,40 @@ def fetch(m, counts, timeout=1800):
     return dst
 
 
+def fetch_live(m, timeout=300):
+    """实盘跟踪数据包: 推 live_snapshot.py -> 远端只读跑 -> 拉回 _live_<key>.json (坏包不覆盖旧包)."""
+    host, tmp = m["ssh"], m["tmp"].rstrip("/")
+    if not m.get("runs_dir"):
+        raise SystemExit("机器 %s 没配 runs_dir (日志目录), 实盘数据包要读它" % m["key"])
+    print("[1/3] %s: 推 live_snapshot.py 到 %s:%s" % (m["label"], host, tmp), flush=True)
+    _run(["ssh"] + SSH_OPTS + [host, "if not exist %s mkdir %s" % (_win(tmp), _win(tmp))], 60)
+    _run(["scp"] + SSH_OPTS + ["-q", os.path.join(DASH_DIR, "live_snapshot.py"), "%s:%s/" % (host, tmp)], 120)
+    print("[2/3] 在 %s 上只读跑 (检出 %s, 日志 %s)" % (m["label"], m["root"], m["runs_dir"]), flush=True)
+    cmd = ("cd /d {root} && {py} {tmp}\\live_snapshot.py --root {root} --data-root {data} --runs-dir {runs} "
+           "--out {tmp}\\live.json").format(root=_win(m["root"]), py=_win(m["python"]), tmp=_win(tmp),
+                                            data=_win(m["data_root"]), runs=_win(m["runs_dir"]))
+    out = _run(["ssh"] + SSH_OPTS + [host, cmd], timeout)
+    tail = [l for l in out.splitlines() if l.startswith("bundle:")]
+    print("      " + (tail[-1] if tail else out.strip()[-300:]), flush=True)
+    dst = live_bundle_path(m["key"])
+    print("[3/3] 拉回 -> %s" % dst, flush=True)
+    _run(["scp"] + SSH_OPTS + ["-q", "%s:%s/live.json" % (host, tmp), dst + ".tmp"], 120)
+    with open(dst + ".tmp", encoding="utf-8") as f:
+        json.load(f)
+    os.replace(dst + ".tmp", dst)
+    return dst
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="拉别的机器的数据页数据包")
     ap.add_argument("--machine", required=True)
+    ap.add_argument("--live", action="store_true", help="拉实盘跟踪数据包 (live_snapshot.py) 而不是数据页数据包")
     a = ap.parse_args(argv)
     ms, counts = machines()
     if a.machine not in ms:
         raise SystemExit("config.REMOTE_DATA_MACHINES 里没有 %s (有: %s)" % (a.machine, ", ".join(ms) or "无"))
     t0 = time.time()
-    dst = fetch(ms[a.machine], counts)
+    dst = fetch_live(ms[a.machine]) if a.live else fetch(ms[a.machine], counts)
     print("完成 %.0fs: %s" % (time.time() - t0, dst), flush=True)
     return 0
 

@@ -17,6 +17,7 @@ document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
   if(t.dataset.tab==="agents") loadAgents();
   if(t.dataset.tab==="research" && typeof loadResearch==="function") loadResearch();   // static/research.js
   if(t.dataset.tab==="knowledge" && typeof loadKnowledge==="function") loadKnowledge();   // static/knowledge.js
+  if(t.dataset.tab==="live" && typeof loadLive==="function") loadLive();   // static/live.js
   if(t.dataset.tab==="streams"){ fitAndResize(TERMS.get(activeTid),false); refreshTermStatus(); }
 });
 

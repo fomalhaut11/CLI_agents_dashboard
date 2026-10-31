@@ -291,3 +291,34 @@ tr.kn-alarm td { color: #f85149; }
 .rs-code { max-height: 480px; overflow: auto; white-space: pre; font-size: 12px; }
 .rs-hl { background: #3d2c0a; display: inline-block; width: 100%; }
 .rs-wgroup > summary { cursor: pointer; padding: 3px 0; }
+
+/* 实盘跟踪页签 (static/live.js) */
+#livewrap h3 { font-size: 13px; margin: 18px 0 6px; color: #c9d1d9; }
+#livewrap table { border-collapse: collapse; font-size: 12px; }
+#livewrap td, #livewrap th { padding: 3px 8px; border-bottom: 1px solid #21262d; text-align: right; white-space: nowrap; }
+#livewrap th { color: #8b949e; font-weight: normal; position: sticky; top: 0; background: #0d1117; }
+#livewrap td:first-child, #livewrap th:first-child { text-align: left; }
+.lv-meta { font-size: 12px; color: #8b949e; margin-bottom: 8px; }
+.lv-alerts { font-size: 12px; line-height: 1.7; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; margin-bottom: 10px; }
+.lv-warn { color: #e3b341; }
+.lv-tiles { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.lv-tile { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 8px 12px; min-width: 150px; }
+.lv-tl { font-size: 11px; color: #8b949e; }
+.lv-tv { font-size: 18px; font-weight: 600; margin: 2px 0; color: #c9d1d9; }
+.lv-tv.fresh { color: #3fb950; } .lv-tv.stale { color: #f85149; }
+.lv-ts { font-size: 11px; color: #8b949e; }
+.lv-chart { position: relative; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 8px 12px; max-width: 790px; }
+.lv-ct { font-size: 12px; color: #c9d1d9; margin-bottom: 4px; }
+.lv-chart svg text { fill: #8b949e; font-size: 11px; }
+.lv-grid { stroke: #21262d; stroke-width: 1; } .lv-zero { stroke: #6e7681; stroke-width: 1; }
+.lv-line { fill: none; stroke: #58a6ff; stroke-width: 2; }
+.lv-dot { fill: #58a6ff; stroke: #161b22; stroke-width: 2; }
+.lv-cross { stroke: #8b949e; stroke-width: 1; stroke-dasharray: 3 3; }
+.lv-tip { position: absolute; display: none; pointer-events: none; background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+  padding: 6px 8px; font-size: 12px; color: #c9d1d9; line-height: 1.5; white-space: nowrap; }
+.lv-cal td { text-align: center !important; }
+.lv-click { cursor: pointer; } .lv-click:hover { background: #161b22; }
+.lv-note { font-size: 11px; color: #8b949e; margin: 6px 0; }
+.lv-scroll { max-height: 360px; overflow: auto; }
+.lv-cols { display: flex; gap: 16px; flex-wrap: wrap; } .lv-cols > div { flex: 1; min-width: 380px; }
+.lv-log { background: #000; color: #c9d1d9; font-size: 11px; padding: 8px; max-height: 420px; overflow: auto; white-space: pre-wrap; border-radius: 6px; }

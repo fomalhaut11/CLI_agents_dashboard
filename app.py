@@ -1903,6 +1903,70 @@ def _remote_or_error(key):
     return b, None
 
 
+# ---------------- 实盘跟踪页签 (2026-10-31): v3ra 模拟账户 / 目标持仓 / 输入闸 / 各链路日志, 只读 ----------------
+# 实盘跑在 .22: remote_fetch.py --live (受管进程, 几秒) 在那台机器上跑 live_snapshot.py 后拉回 _live_<key>.json;
+# "本机" = 对本机检出现算 (本机不跑实盘时多半是旧数据, 页面照实显示). 页面不提供任何写操作.
+_LIVE_CACHE = {}         # key -> (mtime, bundle)
+
+
+def _live_bundle(key):
+    """(包, 错误). key 为 local 时现算本机; 否则读拉回的 _live_<key>.json (按 mtime 缓存)."""
+    if key == "local":
+        import live_snapshot
+        runs = os.path.join(os.path.dirname(C.REPO_ROOT), "pipeline_runs")
+        try:
+            b = live_snapshot.build(C.REPO_ROOT, C.DATA_ROOT, runs)
+        except Exception as e:  # noqa: BLE001 -- 本机没有实盘产物时给出原因而不是 500
+            return None, "本机现算失败: %s" % e
+        b["fetched_age_s"] = 0
+        return b, ""
+    if key not in _machines():
+        return None, "未配置机器 %s" % key
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_live_%s.json" % key)
+    try:
+        mt = os.path.getmtime(p)
+    except OSError:
+        return None, ""
+    hit = _LIVE_CACHE.get(key)
+    if not hit or hit[0] != mt:
+        try:
+            with open(p, encoding="utf-8") as f:
+                hit = (mt, json.load(f))
+        except (OSError, ValueError) as e:
+            return None, "数据包读不了: %s" % e
+        _LIVE_CACHE[key] = hit
+    b = dict(hit[1])
+    b["fetched_age_s"] = int(time.time() - mt)
+    return b, ""
+
+
+@app.route("/api/live")
+def api_live():
+    """实盘跟踪数据包. ?machine=<key> (缺省 = 第一台远端机器, 没有则本机); 没拉过返回 {missing: true}."""
+    ms = _machines()
+    key = (request.args.get("machine") or "").strip() or (next(iter(ms)) if ms else "local")
+    machines = [{"key": k, "label": m["label"]} for k, m in ms.items()] + [{"key": "local", "label": "本机"}]
+    b, err = _live_bundle(key)
+    if b is None:
+        return jsonify({"missing": True, "machine": key, "machines": machines, "error": err})
+    b["machine"], b["machines"] = key, machines
+    return jsonify(b)
+
+
+@app.route("/api/live/refresh", methods=["POST"])
+def api_live_refresh():
+    """拉实盘数据包: 受管进程跑 remote_fetch.py --live, 日志在进程页."""
+    key = ((request.get_json(silent=True) or {}).get("machine") or "").strip()
+    if key not in _machines():
+        return jsonify({"rc": 1, "out": "未配置机器 %s" % key}), 400
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "remote_fetch.py").replace("\\", "/")
+    pid, dup = _proc_start('python "%s" --machine %s --live' % (script, key), C.REPO_ROOT,
+                           "实盘数据包 @ " + _machines()[key]["label"])
+    if pid is None:
+        return jsonify({"rc": 1, "dup": dup, "out": "已在 #%d 拉取中" % dup}), 409
+    return jsonify({"rc": 0, "id": pid})
+
+
 @app.route("/api/data/overview")
 def api_data_overview():
     """页面骨架: 三组概览卡 + 目录计数 + store_v2 版本. 明细走 /api/data/layer。"""

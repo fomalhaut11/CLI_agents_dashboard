@@ -25,6 +25,7 @@
     <button class="tab" data-tab="registry">实验注册表</button>
     <button class="tab" data-tab="procs">进程</button>
     <button class="tab" data-tab="data">数据</button>
+    <button class="tab" data-tab="live" title="v3ra 模拟账户 / 目标持仓 / 输入闸 / 各链路日志 (只读, 读跑实盘那台机器拉回的数据包)">实盘跟踪</button>
     <button class="tab" data-tab="artifacts">产出</button>
     <button class="tab" data-tab="agents">后台Agent</button>
   </nav>
@@ -123,6 +124,11 @@
   <div id="datawrap" class="datawrap">加载中...</div>
 </section>
 
+<!-- ===== 实盘跟踪 (static/live.js) ===== -->
+<section class="panel" id="tab-live">
+  <div id="livewrap" class="datawrap">加载中...</div>
+</section>
+
 <!-- ===== 产出查看 ===== -->
 <section class="panel" id="tab-artifacts">
   <div class="left artleft">
@@ -217,5 +223,6 @@
 <script src="/static/lineage.js"></script>
 <script src="/static/research.js"></script>
 <script src="/static/knowledge.js"></script>
+<script src="/static/live.js"></script>
 </body>
 </html>
