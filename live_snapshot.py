@@ -12,6 +12,8 @@
     lanes       各链路日志 (20:00 日更 / 07:30 清晨 / 09:25 竞价 / 09:28 开盘 30 分钟 / 22:00 分钟复刻):
                 最近几次的时间 / 各步返回码 / 有无 END / 末尾若干行; 锁文件
     live        DATA_ROOT/live 下竞价快照 / open_today.pkl / 开盘 30 分钟 vwap30 的最新文件
+    tasks       本机计划任务里我们的那几个 (zx_* / Codex_GS540*): 状态 / 上次运行与结果 / 下次运行 / 是否到点没触发;
+                lanes 按链路对上任务名 (LANE_TASKS), 不存在记 missing
     calendar    最近若干交易日 (<= 今天) 各自有没有: 目标持仓 / 账户记账 / 竞价日志 / 清晨日志 / 日更日志
     meta        主机 / 生成时间 / 生产模型目录 (config/production.yaml)
 
@@ -39,6 +41,21 @@ LANES = [
     ("min1", "22:00 当日分钟线复刻", "hf22_min1_", "22:00"),
 ]
 _RC_RE = re.compile(r"^(?:([A-Z][A-Z0-9_]*)_)?RC=(-?\d+)")
+# 链路 -> Windows 计划任务名 (.22 上的注册见 tools/deploy/*_22.cmd 头注释). 任务没触发就没有日志, 只看日志会把
+# "没跑" 显示成空格子; 这里直接读任务调度器的状态 / 上次结果 / 下次时间.
+LANE_TASKS = {"daily": "zx_daily_pipeline", "morning": "zx_morning_minute", "auction": "zx_live_auction",
+              "intraday": "zx_live_intraday", "min1": "zx_hf22_min1"}
+TASK_OURS_RE = re.compile(r"^(zx_|Codex_GS540)", re.I)   # 同机同事的任务不列
+_TASK_PS = (
+    "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+    "@(Get-ScheduledTask | Where-Object { $_.TaskPath -eq '\\' } | ForEach-Object { $i = $_ | Get-ScheduledTaskInfo; "
+    "[pscustomobject]@{name=$_.TaskName; state=[string]$_.State; "
+    "action=(($_.Actions | ForEach-Object { ($_.Execute + ' ' + $_.Arguments).Trim() }) -join ' | '); "
+    "last=$(if($i.LastRunTime -and $i.LastRunTime.Year -gt 2000){$i.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss')}else{''}); "
+    "next=$(if($i.NextRunTime){$i.NextRunTime.ToString('yyyy-MM-dd HH:mm:ss')}else{''}); "
+    "result=[int64]$i.LastTaskResult; missed=[int]$i.NumberOfMissedRuns} }) | ConvertTo-Json -Depth 3 -Compress")
+# LastTaskResult 里不算失败的值: 0 成功, 0x41301 正在运行, 0x41303 从未运行
+TASK_RESULT_OK = {0: "成功", 0x41301: "正在运行", 0x41303: "从未运行"}
 
 
 def _read_csv(path):
@@ -215,6 +232,40 @@ def _live(data_root):
     return out
 
 
+def _tasks():
+    """本机计划任务里我们的那几个 (zx_* / Codex_GS540*): 状态 / 上次运行与结果 / 下次运行 / 错过次数.
+
+    非 Windows 或 PowerShell 调不了 -> {"error": ...}; 链路对应的任务不存在 -> 该链路 missing.
+    """
+    if os.name != "nt":
+        return {"error": "非 Windows, 不读计划任务", "tasks": [], "lanes": {}}
+    import subprocess
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", _TASK_PS], capture_output=True, timeout=60)
+        raw = json.loads(r.stdout.decode("utf-8", "replace") or "[]")
+    except Exception as e:  # noqa: BLE001 -- 任务状态只是辅助视图, 读不了不拖垮整个包
+        return {"error": str(e)[:200], "tasks": [], "lanes": {}}
+    raw = raw if isinstance(raw, list) else [raw]
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    tasks = []
+    for t in raw:
+        if not TASK_OURS_RE.match(t.get("name") or ""):
+            continue
+        res = t.get("result")
+        t["result_ok"] = res in TASK_RESULT_OK
+        t["result_text"] = TASK_RESULT_OK.get(res, "0x%X" % res if isinstance(res, int) and res >= 0 else str(res))
+        # 下次运行时间已过却还挂着 = 到点没触发 (机器关机 / 调度器卡住); 留 10 分钟余量给正在启动的任务
+        t["overdue"] = bool(t.get("next")) and t["state"] != "Disabled" and t["next"] < _minus_min(now, 10)
+        tasks.append(t)
+    by = {t["name"]: t for t in tasks}
+    lanes = {k: (by.get(n) or {"name": n, "missing": True}) for k, n in LANE_TASKS.items()}
+    return {"tasks": sorted(tasks, key=lambda t: t["name"]), "lanes": lanes, "at": now}
+
+
+def _minus_min(ts, m):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(time.strptime(ts, "%Y-%m-%d %H:%M:%S")) - 60 * m))
+
+
 def _calendar(data_root, hold_dir, acc_rows, lanes, n=12):
     """最近 n 个交易日 (<= 今天) 各链路有没有产物; 交易日历读不了 (没有 pandas 等) -> 空."""
     try:
@@ -243,7 +294,7 @@ def build(root, data_root, runs_dir):
     b = {"account": acc, "positions": _positions(acc_dir), "paper": _paper(hold_dir),
          "gate_latest": _gate_brief(_read_json(os.path.join(runs_dir, "gate_latest", "input_gate.json"))),
          "gate_latest_mtime": _mtime(os.path.join(runs_dir, "gate_latest", "input_gate.json")),
-         "lanes": lanes, "live": _live(data_root),
+         "lanes": lanes, "live": _live(data_root), "tasks": _tasks(),
          "calendar": _calendar(data_root, hold_dir, acc["rows"], lanes)}
     b["meta"] = {"host": socket.gethostname(), "root": root, "data_root": data_root, "runs_dir": runs_dir,
                  "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "seconds": round(time.time() - t0, 1),

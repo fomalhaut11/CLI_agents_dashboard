@@ -11,17 +11,32 @@ function lvDay(d){ d=String(d||"").replace(/-/g,""); return d.length===8?d.slice
 
 function setLiveMachine(k){ liveMachine=k; try{ localStorage.setItem("live-machine",k); }catch(e){} loadLive(); }
 
-async function fetchLive(){
-  const r=await jpost("/api/live/refresh",{machine:liveData&&liveData.machine||liveMachine});
-  if(!r||r.rc!==0){ toast((r&&r.out)||"启动失败"); return; }
-  toast("已启动拉取 #"+r.id+" (几秒), 完成后自动刷新");
+// 自动拉取 (2026-11-01): 页签打开时远端机器没有数据包, 或数据包比 LIVE_AUTO_MS 旧, 就自动拉一次;
+// 页签停留期间每 LIVE_AUTO_MS 再拉一次 (浏览器标签页在后台或切到别的页签时不拉).
+const LIVE_AUTO_MS=10*60*1000;
+let liveFetching=false, liveTimer=null;
+function liveTabActive(){ const el=document.getElementById("tab-live"); return !!(el&&el.classList.contains("active")&&!document.hidden); }
+
+async function fetchLive(quiet){
+  const machine=liveData&&liveData.machine||liveMachine;
+  if(liveFetching || !machine || machine==="local") return;
+  liveFetching=true;
+  const r=await jpost("/api/live/refresh",{machine});
+  if(!r||r.rc!==0){ liveFetching=false; toast((r&&r.out)||"启动失败"); return; }
+  if(!quiet) toast("已启动拉取 #"+r.id+" (几秒), 完成后自动刷新");
   const t0=Date.now(), before=liveData&&liveData.meta&&liveData.meta.generated_at;
   const poll=async()=>{
-    const d=await jget("/api/live?machine="+encodeURIComponent(liveData.machine));
-    if(d&&d.meta&&d.meta.generated_at!==before){ loadLive(); return; }
+    const d=await jget("/api/live?machine="+encodeURIComponent(machine));
+    if(d&&d.meta&&d.meta.generated_at!==before){ liveFetching=false; if(liveTabActive()) loadLive(); return; }
     if(Date.now()-t0<120000) setTimeout(poll,3000);
+    else { liveFetching=false; toast("拉取 #"+r.id+" 2 分钟没有新数据包, 去 \"受管进程\" 看输出"); }
   };
   setTimeout(poll,3000);
+}
+
+function liveAutoArm(){
+  if(liveTimer) return;
+  liveTimer=setInterval(()=>{ if(liveTabActive()) fetchLive(true); }, LIVE_AUTO_MS);
 }
 
 // 需要人看的事: 最近交易日没有目标持仓 / 链路返回码非零 / 输入闸不过 / 锁文件在
@@ -48,7 +63,36 @@ function liveAlerts(d){
   if(g && g.ok===false) out.push(["warn",`20:00 输入闸 (${esc(g.day||"")}) 不通过: ${g.n_blocking} 个特征阻塞`+
     `${g.optimizer_ok===false?", 优化器输入不齐":""} -- 分钟类特征当晚拿不到属正常, 以 07:30 清晨链路为准`]);
   if((d.lanes||{}).lock) out.push(["warn",`锁文件在: ${d.lanes.lock.who} (${d.lanes.lock.mtime} 起), 可能正在跑`]);
+  // 计划任务: 任务没触发就不会有日志, 上面按日志的判断看不到, 这里直接看调度器
+  const tk=d.tasks||{}, lab={};
+  lanes.forEach(l=>lab[l.key]=l.label);
+  if(tk.error && d.machine!=="local") out.push(["warn",`读不了计划任务: ${esc(tk.error)}`]);
+  Object.keys(tk.lanes||{}).forEach(k=>{
+    const t=tk.lanes[k], who=`${lab[k]||k} 的计划任务 ${esc(t.name)}`;
+    if(t.missing){ if(d.machine!=="local") out.push(["stale",`${who} 不存在 -- 这条链路不会自动跑`]); return; }
+    if(t.state==="Disabled") out.push(["stale",`${who} 已禁用 -- 这条链路不会自动跑`]);
+    else if(t.overdue) out.push(["stale",`${who} 到点没触发: 下次运行时间 ${esc(t.next)} 已过 (机器关机或调度器卡住?)`]);
+    if(!t.result_ok) out.push(["warn",`${who} 上次运行 (${esc(t.last)}) 结果 ${esc(t.result_text)}`]);
+    if(t.missed>0) out.push(["warn",`${who} 错过 ${t.missed} 次运行`]);
+  });
   return out;
+}
+
+// 计划任务表: 调度器自己的记录 (状态 / 上次 / 下次), 与日志互证
+function liveTasks(d){
+  const tk=d.tasks||{};
+  if(tk.error) return `<div class="dim">计划任务: ${esc(tk.error)}</div>`;
+  const lanes=(d.lanes||{}).lanes||[], byName={};
+  Object.keys(tk.lanes||{}).forEach(k=>{ const l=lanes.find(x=>x.key===k); byName[tk.lanes[k].name]=l?l.label:k; });
+  const miss=Object.values(tk.lanes||{}).filter(t=>t.missing);
+  const st=t=>t.state==="Disabled"?`<td class="stale">已禁用</td>`:t.state==="Running"?`<td class="fresh">运行中</td>`:`<td>${t.state==="Ready"?"就绪":esc(t.state)}</td>`;
+  const rows=(tk.tasks||[]).map(t=>`<tr><td><code>${esc(t.name)}</code></td><td>${esc(byName[t.name]||"(不属于上面 5 条链路)")}</td>${st(t)}
+      <td>${esc(t.last||"-")}</td><td class="${t.result_ok?"fresh":"lv-warn"}">${esc(t.result_text)}</td>
+      <td class="${t.overdue?"stale":""}">${esc(t.next||"-")}${t.overdue?" (已过, 没触发)":""}</td><td class="${t.missed?"lv-warn":"dim"}">${t.missed||0}</td>
+      <td class="dim" title="${esc(t.action||"")}">${esc(String(t.action||"").slice(0,60))}</td></tr>`).join("")
+    + miss.map(t=>`<tr><td><code>${esc(t.name)}</code></td><td>${esc(byName[t.name]||"")}</td><td class="stale" colspan="6">任务不存在</td></tr>`).join("");
+  return `<table><tr><th>任务</th><th>链路</th><th>状态</th><th>上次运行</th><th>上次结果</th><th>下次运行</th><th>错过</th><th>命令</th></tr>${rows}</table>
+    <div class="lv-note">读自这台机器的 Windows 任务计划程序 (数据包生成时)。"上次结果" 是外层 cmd 的退出码, 各步成败看下面链路日历里的返回码。只列 zx_* / Codex_GS540* 任务, 同机同事的任务不列。</div>`;
 }
 
 function liveKpis(d){
@@ -188,11 +232,17 @@ async function loadLive(){
   const wrap=document.getElementById("livewrap");
   const d=await jget("/api/live"+(liveMachine?"?machine="+encodeURIComponent(liveMachine):""));
   liveData=d;
+  liveAutoArm();
+  const remote=d.machine!=="local";
+  const stale=remote && !d.missing && !(d.fetched_age_s<LIVE_AUTO_MS/1000);
+  if(remote && (d.missing||stale)) fetchLive(true);
   const bar=`<div class="datahead machinebar"><span style="color:#8b949e;font-size:12px">机器:</span> `+(d.machines||[]).map(m=>
     `<button class="${m.key===d.machine?"primary":""}" onclick="setLiveMachine('${esc(m.key)}')">${esc(m.label)}</button>`).join(" ")
-    +(d.machine!=="local"?` <button class="primary" onclick="fetchLive()">拉取最新</button>`:"")+`</div>`;
+    +(remote?` <button class="primary" onclick="fetchLive()">拉取最新</button>
+      <span class="dim" style="font-size:12px">${liveFetching?"正在从这台机器拉取...":"页签打开期间每 10 分钟自动拉取"}</span>`:"")+`</div>`;
   if(d.missing){
-    wrap.innerHTML=bar+`<div class="rs-hint">${d.error?esc(d.error):"还没有这台机器的实盘数据包"}。点 "拉取最新" (受管进程跑 remote_fetch.py --live, 几秒)。</div>`;
+    wrap.innerHTML=bar+`<div class="rs-hint">${d.error?esc(d.error)+"。":""}本机还没有这台机器的实盘数据包, 已自动开始拉取 (几秒), 拉完自动显示。
+      ${liveFetching?"":"如果没有开始, 点 \"拉取最新\"。"}</div>`;
     return;
   }
   const m=d.meta||{}, al=liveAlerts(d);
@@ -201,6 +251,7 @@ async function loadLive(){
     ${al.length?`<div class="lv-alerts">${al.map(a=>`<div class="${a[0]==="warn"?"lv-warn":a[0]}">${a[0]==="stale"?"[!] ":a[0]==="warn"?"[?] ":""}${a[1]}</div>`).join("")}</div>`:`<div class="lv-alerts fresh">最近交易日各链路无异常</div>`}
     ${liveKpis(d)}
     ${liveChart(d)}
+    <h3>计划任务</h3>${liveTasks(d)}
     <h3>链路日历</h3>${liveCalendar(d)}
     <div id="lv-logview"></div>
     <h3>模拟账户逐日</h3><div class="lv-scroll">${liveAccountTable(d)}</div>
