@@ -2,7 +2,15 @@
 // 数据 = /api/live?machine=<key> (远端机器读 remote_fetch.py --live 拉回的包; 本机现算), 构造见 live_snapshot.py.
 // 页面不写任何东西: "拉取最新" 只是以受管进程重拉数据包.
 let liveMachine=(()=>{ try{ return localStorage.getItem("live-machine")||""; }catch(e){ return ""; } })();
-let liveData=null, liveLogSel=null, livePosFilter="";
+let liveData=null, liveView=null, liveLogSel=null, livePosFilter="";
+// 账户 (2026-11-01): "prod" = 生产账户 (l55, 中证1000); 其余 = 多指数跟踪账户 (bundle.tracking.accounts[].key)
+let liveAcct=(()=>{ try{ return localStorage.getItem("live-acct")||"prod"; }catch(e){ return "prod"; } })();
+function setLiveAcct(k){ liveAcct=k; try{ localStorage.setItem("live-acct",k); }catch(e){} loadLive(); }
+// 选中账户的视图: 账户 / 持仓与成交 / 目标持仓三块换成该账户的, 其余 (链路 / 日历 / 任务) 不变
+function liveAcctView(d){
+  const a=((d.tracking||{}).accounts||[]).find(x=>x.key===liveAcct);
+  return a?Object.assign({},d,{account:a.account,positions:a.positions,paper:a.paper,_acct:a}):Object.assign({},d,{_acct:null});
+}
 
 function lvPct(x,d){ return (x===null||x===undefined||x==="")?"":((x*100).toFixed(d===undefined?2:d)+"%"); }
 function lvNum(x,d){ return (x===null||x===undefined||x==="")?"":(typeof x==="number"?x.toLocaleString("en-US",{maximumFractionDigits:d===undefined?0:d}):esc(String(x))); }
@@ -63,6 +71,13 @@ function liveAlerts(d){
   if(g && g.ok===false) out.push(["warn",`20:00 输入闸 (${esc(g.day||"")}) 不通过: ${g.n_blocking} 个特征阻塞`+
     `${g.optimizer_ok===false?", 优化器输入不齐":""} -- 分钟类特征当晚拿不到属正常, 以 07:30 清晨链路为准`]);
   if((d.lanes||{}).lock) out.push(["warn",`锁文件在: ${d.lanes.lock.who} (${d.lanes.lock.mtime} 起), 可能正在跑`]);
+  // 跟踪账户: 开始日之后最近交易日没跑出持仓 / 有账户失败
+  const tr=d.tracking||{};
+  if((tr.accounts||[]).length && last && last.day>=String(tr.start_day||"").replace(/-/g,"")){
+    if(tr.last_run_day!==last.day) out.push(["stale",`多指数跟踪账户: 最近交易日 ${lvDay(last.day)} 没有出持仓 (最近一次 ${lvDay(tr.last_run_day)||"无"})`]);
+    else { const bad=Object.entries((tr.last_run||{}).accounts||{}).filter(([k,v])=>!v.ok);
+      if(bad.length) out.push(["warn",`多指数跟踪账户 ${lvDay(last.day)}: ${bad.length} 个账户没出持仓 -- ${bad.slice(0,4).map(([k,v])=>esc(k)+": "+esc(String(v.error||"").slice(0,80))).join("; ")}`]); }
+  }
   // 计划任务: 任务没触发就不会有日志, 上面按日志的判断看不到, 这里直接看调度器
   const tk=d.tasks||{}, lab={};
   lanes.forEach(l=>lab[l.key]=l.label);
@@ -76,6 +91,25 @@ function liveAlerts(d){
     if(t.missed>0) out.push(["warn",`${who} 错过 ${t.missed} 次运行`]);
   });
   return out;
+}
+
+// 账户对比: 生产账户 + 各跟踪账户的最新一行; 点行切换下面各块显示的账户
+function liveAccounts(d){
+  const tr=d.tracking||{}, accts=tr.accounts||[];
+  if(!accts.length) return "";
+  const last=rows=>rows&&rows.length?rows[rows.length-1]:null;
+  const row=(key,label,bench,cons,acc,paper)=>{
+    const r=last((acc||{}).rows), cum=r?(r.nav_rel||1)-1:null;
+    return `<tr class="lv-click${key===liveAcct?" lv-sel":""}" onclick="setLiveAcct('${esc(key)}')"><td>${esc(label)}</td><td>${esc(bench)}</td><td>${esc(cons)}</td>
+      <td>${r?esc(r.day):"-"}</td><td>${r?lvNum(r.nav):"-"}</td><td class="${r?lvSign(cum):""}">${r?lvPct(cum):"-"}</td>
+      <td class="${r?lvSign(r.excess):""}">${r?lvPct(r.excess):"-"}</td><td>${r?lvNum(r.n_hold):"-"}</td><td>${lvDay((paper||{}).latest_day)||"-"}</td></tr>`;
+  };
+  const p=d.account||{}, pp=d.paper||{};
+  return `<table class="lv-accts"><tr><th>账户</th><th>基准</th><th>约束</th><th>记账到</th><th>净值</th><th>累计超额</th><th>当日超额</th><th>持仓</th><th>最新目标持仓</th></tr>
+    ${row("prod","生产 (l55)","中证1000","生产",p,pp)}
+    ${accts.map(a=>row(a.key,a.key,a.benchmark,`${a.label} (TE ${lvPct(a.params.te_limit,1)} / 单股 ${lvPct(a.params.active_bound,0)} / 风格 ${a.params.style_dev})`,a.account,a.paper)).join("")}</table>
+    <div class="lv-note">跟踪账户 = 全市场模型 ${esc(tr.model||"")} r${esc(String(tr.round||""))} 三种子打分平均, ${lvDay(tr.start_day)} 起各自 1 亿空仓建仓, 交易规则与费用同生产账户 (主板 / 创业板 100 股一手, 科创板 200 股)。
+      点一行, 下面的指标 / 曲线 / 账户 / 持仓各块换成该账户。研究回测是三个种子各自一个组合, 这里分数先平均再组合, 没有回测过。</div>`;
 }
 
 // 计划任务表: 调度器自己的记录 (状态 / 上次 / 下次), 与日志互证
@@ -159,7 +193,7 @@ function liveChart(d){
 function liveHover(ev,i,x){
   const tip=document.getElementById("lv-tip"), cr=document.getElementById("lv-cross");
   if(!ev){ tip.style.display="none"; cr.style.display="none"; return; }
-  const r=((liveData.account||{}).rows||[]).filter(r=>r.nav_rel!=null)[i];
+  const r=(((liveView||liveData).account||{}).rows||[]).filter(r=>r.nav_rel!=null)[i];
   cr.setAttribute("x1",x); cr.setAttribute("x2",x); cr.style.display="";
   tip.innerHTML=`<b>${esc(r.day)}</b><br>累计超额 ${lvPct(r.nav_rel-1)}<br>当日 账户 ${lvPct(r.ret)} / 基准 ${lvPct(r.bench_ret)} / 超额 ${lvPct(r.excess)}<br>净值 ${lvNum(r.nav)}`;
   const box=ev.currentTarget.ownerSVGElement.getBoundingClientRect();
@@ -204,7 +238,7 @@ function livePositions(d){
       ${tr.map(r=>`<tr><td>${esc(r.code)}</td><td>${esc(r.side)}</td><td>${lvNum(r.qty)}</td><td class="${r.status==="filled"?"":"lv-warn"}">${esc(r.status)}</td><td>${lvNum(r.price,2)}</td><td>${lvNum(r.amount)}</td><td>${lvNum(r.n_orders)}</td><td>${lvNum(r.fee,2)}</td></tr>`).join("")}</table></div>
       <div class="lv-ct" style="margin-top:8px">近期成交状态</div><table><tr><th>日</th><th>成交</th><th>其余</th></tr>${hist}</table></div></div>`;
 }
-function liveRedrawPos(){ const el=document.getElementById("lv-pos"); if(el&&liveData){ el.innerHTML=livePositions(liveData); const i=el.querySelector("input"); if(i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); } } }
+function liveRedrawPos(){ const el=document.getElementById("lv-pos"); if(el&&liveData){ el.innerHTML=livePositions(liveView||liveData); const i=el.querySelector("input"); if(i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); } } }
 
 function liveLanes(d){
   const ln=d.lanes||{};
@@ -245,18 +279,23 @@ async function loadLive(){
       ${liveFetching?"":"如果没有开始, 点 \"拉取最新\"。"}</div>`;
     return;
   }
+  if(liveAcct!=="prod" && !((d.tracking||{}).accounts||[]).some(a=>a.key===liveAcct)) liveAcct="prod";
+  const v=liveAcctView(d); liveView=v;
+  const acctName=v._acct?`${esc(v._acct.key)} (${esc(v._acct.label)})`:"生产 (l55, 中证1000)";
   const m=d.meta||{}, al=liveAlerts(d);
   wrap.innerHTML=bar+`<div class="lv-meta">${esc(m.host||"")} · 检出 <code>${esc(m.root||"")}</code> · 生产模型 <code>${esc(m.models_dir||"?")}</code> ·
       数据包生成于 ${esc(m.generated_at||"?")}${d.machine!=="local"?` (拉回 ${fmtAge(d.fetched_age_s)}前)`:" (本机现算)"}</div>
     ${al.length?`<div class="lv-alerts">${al.map(a=>`<div class="${a[0]==="warn"?"lv-warn":a[0]}">${a[0]==="stale"?"[!] ":a[0]==="warn"?"[?] ":""}${a[1]}</div>`).join("")}</div>`:`<div class="lv-alerts fresh">最近交易日各链路无异常</div>`}
-    ${liveKpis(d)}
-    ${liveChart(d)}
+    ${((d.tracking||{}).accounts||[]).length?`<h3>账户</h3>${liveAccounts(d)}`:""}
+    <h3>当前账户: ${acctName}</h3>
+    ${liveKpis(v)}
+    ${liveChart(v)}
     <h3>计划任务</h3>${liveTasks(d)}
     <h3>链路日历</h3>${liveCalendar(d)}
     <div id="lv-logview"></div>
-    <h3>模拟账户逐日</h3><div class="lv-scroll">${liveAccountTable(d)}</div>
-    <h3>目标持仓 (近 ${((d.paper||{}).days||[]).length} 个持仓日)</h3>${livePaperTable(d)}
-    <h3>持仓与成交</h3><div id="lv-pos">${livePositions(d)}</div>
+    <h3>模拟账户逐日 · ${acctName}</h3><div class="lv-scroll">${liveAccountTable(v)}</div>
+    <h3>目标持仓 (近 ${((v.paper||{}).days||[]).length} 个持仓日) · ${acctName}</h3>${livePaperTable(v)}
+    <h3>持仓与成交 · ${acctName}</h3><div id="lv-pos">${livePositions(v)}</div>
     <h3>链路日志</h3>${liveLanes(d)}${liveLiveFiles(d)}
     <div class="rs-hint">只读视图。持仓目录日 D = D 日 9:25 竞价成交 (07:30 清晨链路产出); 账户按竞价价记账, 偏乐观, 只作参考口径。
       v3ra 说明见 docs/architecture/modules/production_v3ra.md。</div>`;

@@ -14,6 +14,8 @@
     live        DATA_ROOT/live 下竞价快照 / open_today.pkl / 开盘 30 分钟 vwap30 的最新文件
     tasks       本机计划任务里我们的那几个 (zx_* / Codex_GS540*): 状态 / 上次运行与结果 / 下次运行 / 是否到点没触发;
                 lanes 按链路对上任务名 (LANE_TASKS), 不存在记 missing
+    tracking    多指数跟踪账户 (config/production.yaml `tracking`, 2026-11-01): 每个账户同 account / positions / paper
+                三块 (目录 <root>/<账户>/account 与 /paper), 外加 _shared/<D>/run.json (当天各账户出持仓成败)
     calendar    最近若干交易日 (<= 今天) 各自有没有: 目标持仓 / 账户记账 / 竞价日志 / 清晨日志 / 日更日志
     meta        主机 / 生成时间 / 生产模型目录 (config/production.yaml)
 
@@ -39,6 +41,7 @@ LANES = [
     ("auction", "09:25 集合竞价快照", "live_auction_", "09:25"),
     ("intraday", "09:28 开盘 30 分钟行情", "live_intraday_", "09:28"),
     ("min1", "22:00 当日分钟线复刻", "hf22_min1_", "22:00"),
+    ("track", "08:10 多指数跟踪账户 (出持仓 + 记账)", "track_", "08:10"),
 ]
 _RC_RE = re.compile(r"^(?:([A-Z][A-Z0-9_]*)_)?RC=(-?\d+)")
 # 链路 -> Windows 计划任务名 (.22 上的注册见 tools/deploy/*_22.cmd 头注释). 任务没触发就没有日志, 只看日志会把
@@ -266,6 +269,34 @@ def _minus_min(ts, m):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(time.strptime(ts, "%Y-%m-%d %H:%M:%S")) - 60 * m))
 
 
+def _tracking(root):
+    """多指数跟踪账户: config `tracking` 展开成 基准 x 约束档; 读不到配置 (或没有 yaml) -> 空."""
+    try:
+        import yaml
+        with open(os.path.join(root, "config", "production.yaml"), encoding="utf-8") as f:
+            t = (yaml.safe_load(f) or {}).get("tracking")
+    except Exception as e:  # noqa: BLE001 -- 跟踪账户只是附加视图
+        return {"error": str(e)[:200], "accounts": []}
+    if not t:
+        return {"accounts": []}
+    base = os.path.join(root, t["root"])
+    runs = sorted(d for d in os.listdir(os.path.join(base, "_shared")) if re.match(r"^\d{8}$", d)) \
+        if os.path.isdir(os.path.join(base, "_shared")) else []
+    last_run = _read_json(os.path.join(base, "_shared", runs[-1], "run.json")) if runs else None
+    out = []
+    for bench, code in (t.get("benchmarks") or {}).items():
+        for cname, c in (t.get("constraints") or {}).items():
+            name = "%s_%s" % (bench, cname)
+            acc_dir, hold_dir = os.path.join(base, name, "account"), os.path.join(base, name, "paper")
+            out.append({"key": name, "benchmark": bench, "benchmark_code": str(code), "constraint": cname,
+                        "label": c.get("label", cname),
+                        "params": {k: c.get(k) for k in ("te_limit", "active_bound", "style_dev")},
+                        "account": _account(acc_dir), "positions": _positions(acc_dir), "paper": _paper(hold_dir)})
+    m = t.get("model") or {}
+    return {"start_day": str(t.get("start_day")), "root": t["root"], "model": m.get("name"), "model_dirs": m.get("dirs"),
+            "round": m.get("round"), "last_run_day": runs[-1] if runs else None, "last_run": last_run, "accounts": out}
+
+
 def _calendar(data_root, hold_dir, acc_rows, lanes, n=12):
     """最近 n 个交易日 (<= 今天) 各链路有没有产物; 交易日历读不了 (没有 pandas 等) -> 空."""
     try:
@@ -294,7 +325,7 @@ def build(root, data_root, runs_dir):
     b = {"account": acc, "positions": _positions(acc_dir), "paper": _paper(hold_dir),
          "gate_latest": _gate_brief(_read_json(os.path.join(runs_dir, "gate_latest", "input_gate.json"))),
          "gate_latest_mtime": _mtime(os.path.join(runs_dir, "gate_latest", "input_gate.json")),
-         "lanes": lanes, "live": _live(data_root), "tasks": _tasks(),
+         "lanes": lanes, "live": _live(data_root), "tasks": _tasks(), "tracking": _tracking(root),
          "calendar": _calendar(data_root, hold_dir, acc["rows"], lanes)}
     b["meta"] = {"host": socket.gethostname(), "root": root, "data_root": data_root, "runs_dir": runs_dir,
                  "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "seconds": round(time.time() - t0, 1),
