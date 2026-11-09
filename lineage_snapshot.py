@@ -8,6 +8,9 @@ strict judge (内容终点 vs 期望), 再把 logs/pipeline_runtime_history.json
     python tools/stream_dashboard/lineage_snapshot.py --out tools/stream_dashboard/_lineage_snapshot.json
 
 判定口径与 `manage.py data scan` 相同 (core.data_endpoint.judge strict=True); 点亮 = OK / FROZEN / STATIC。
+本轮目标日 (2026-11-09): 日更执行器带 ZX_RUN_TARGET / ZX_RUN_LANE 判, 快照不带就退回无 T 的旧规则, 而 lag 已改为相对 T,
+旧规则下偏松 (落后的判新鲜)。故环境未设时取最近一轮 (晚间 / 清晨, 按 decided_at) 的目标日记录
+run_target_*.json 设进本进程环境, 与最近那轮日更同口径; 找不到记录才退回旧规则, 快照里 run_target 为 None。
 """
 import argparse
 import collections
@@ -17,8 +20,41 @@ import sys
 import time
 
 
-def build(root, features=None):
+def latest_run_target(runs_dir):
+    """最近一轮的目标日记录 {T, lane, decided_at, file}; 目录不存在 / 没有可读记录 -> None."""
+    best = None
+    if not runs_dir or not os.path.isdir(runs_dir):
+        return None
+    for f in os.listdir(runs_dir):
+        if not (f.startswith('run_target_') and f.endswith('.json')):
+            continue
+        try:
+            rec = json.load(open(os.path.join(runs_dir, f), encoding='utf-8'))
+            t, lane, at = str(rec['T'])[:10], rec.get('lane') or 'evening', str(rec.get('decided_at') or '')
+        except Exception:                        # noqa: BLE001 坏文件不当依据
+            continue
+        if lane in ('evening', 'morning') and (best is None or at > best['decided_at']):
+            best = {'T': t, 'lane': lane, 'decided_at': at, 'file': f}
+    return best
+
+
+def apply_run_target(runs_dir=None):
+    """环境已设 ZX_RUN_TARGET 就照用; 否则取 runs_dir (默认本检出 core.run_target.RUNS_DIR) 里最近一轮的记录设进环境."""
+    if (os.environ.get('ZX_RUN_TARGET') or '').strip():
+        return {'T': os.environ['ZX_RUN_TARGET'].strip(), 'lane': (os.environ.get('ZX_RUN_LANE') or 'evening').strip(),
+                'decided_at': '', 'file': '(环境变量)'}
+    if runs_dir is None:
+        from core.run_target import RUNS_DIR
+        runs_dir = str(RUNS_DIR)
+    rt = latest_run_target(runs_dir)
+    if rt:
+        os.environ['ZX_RUN_TARGET'], os.environ['ZX_RUN_LANE'] = rt['T'], rt['lane']
+    return rt
+
+
+def build(root, features=None, run_targets_dir=None):
     sys.path.insert(0, root)
+    run_target = apply_run_target(run_targets_dir)     # 先于任何 judge: 与最近那轮日更同口径
     from tools.data_management import lineage_pipeline as LP
     from tools.pipeline_observe import runtime_key, load_history
     from core.data_endpoint import judge, trading_days
@@ -83,6 +119,7 @@ def build(root, features=None):
     return {
         'generated_at': time.strftime('%Y-%m-%d %H:%M:%S'), 'root': root,
         'calendar_end': (str(cal[-1]) if cal else None),
+        'run_target': run_target,
         'n_nodes': len(nodes), 'n_lit': lit, 'n_features': len(feats),
         'waves': {str(k): len(v) for k, v in sorted(waves.items())},
         'nodes': nodes,

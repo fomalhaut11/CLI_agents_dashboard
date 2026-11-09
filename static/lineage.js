@@ -67,7 +67,7 @@ function renderLineage(){
   const todayBad = d.nodes.filter(n => n.last_run && n.last_run.today && ["FAIL", "TIMEOUT", "NOOP"].indexOf(n.last_run.status) >= 0).length;
   const head = `<div class="linhead">
       <b>血缘点亮图</b>
-      <span class="dim">快照 ${esc(d.generated_at)} | ${esc(d.root)} | 日历止 ${esc(d.calendar_end || "?")} |
+      <span class="dim">快照 ${esc(d.generated_at)} | ${esc(d.root)} | 日历止 ${esc(d.calendar_end || "?")} | ${d.run_target ? "判据目标日 T=" + esc(d.run_target.T) + " (" + esc(d.run_target.lane === "morning" ? "清晨" : "晚间") + ")" : "无目标日记录, 按旧规则判"} |
         点亮 <span class="fresh">${d.n_lit}</span> / ${d.n_nodes} | 今天运行失败 <span class="${todayBad ? "stale" : "fresh"}">${todayBad}</span></span>
       <input id="lin-filter" placeholder="搜节点名" value="${esc(LIN.filter)}" oninput="LIN.filter=this.value.toLowerCase(); LIN.sel=null; renderLineage()">
       <label><input type="checkbox" ${LIN.onlyBad ? "checked" : ""} onchange="LIN.onlyBad=this.checked; renderLineage()"> 只看未点亮</label>

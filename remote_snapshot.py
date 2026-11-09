@@ -67,7 +67,8 @@ def build(root, data_root, counts_spec, runs_dir):
     import lineage_snapshot as LS
     import data_layers as DL
 
-    snap = LS.build(root)
+    # 目标日记录在日更日志目录下的 run_targets/ (tools/deploy/daily_22.cmd --runs-dir), 不在检出里
+    snap = LS.build(root, run_targets_dir=(os.path.join(runs_dir, "run_targets") if runs_dir else None))
     DL.REPO_ROOT = root                                    # 脚本在远端临时目录, 血缘定义在远端检出里
     DL.LINEAGE_YAML = os.path.join(root, "config", "derived_data.yaml")
     judge = {n["name"]: n for n in snap.get("nodes") or [] if n.get("name")}
