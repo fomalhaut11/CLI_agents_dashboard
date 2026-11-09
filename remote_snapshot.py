@@ -74,19 +74,14 @@ def build(root, data_root, counts_spec, runs_dir):
     judge = {n["name"]: n for n in snap.get("nodes") or [] if n.get("name")}
     now = time.time()
     rows = []
-    agg = {k: {"key": k, "label": lbl, "total": 0, "stale": 0, "missing": 0} for k, lbl in DL.GROUPS}
+    agg = DL.new_group_agg()
     for e in DL.build_catalog(data_root):
         DL.stat_entry(e, now)
         e["content_date"], e["content_cached"] = None, False
         DL._apply_judge(e, judge)
         e["missing"] = DL._is_missing(e)
         rows.append(e)
-        a = agg[e["group"]]
-        a["total"] += 1
-        if e["missing"]:
-            a["missing"] += 1
-        elif e["stale"]:
-            a["stale"] += 1
+        DL.count_entry(agg, e)
     counts = []
     for label, rel, suf in counts_spec:
         d = os.path.join(data_root, rel.replace("/", os.sep))

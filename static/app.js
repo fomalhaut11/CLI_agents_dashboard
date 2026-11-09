@@ -874,8 +874,9 @@ function dataRowsHtml(rows){
     const name=`<td title="${esc(x.name)}">${esc(x.name)}</td>`;
     // 有血缘快照判定时以它为准 (内容终点, 认 FROZEN/REMOTE); 否则退回 mtime 快判
     const J=x.judge, JL={OK:"最新",STALE:"落后",MISSING:"缺失",FROZEN:"冻结",REMOTE:"远程",STATIC:"静态",
-      UNKNOWN:"待查",UNREADABLE:"读不出",UNSCANNED:"未扫描",UNJUDGED:"不判"};
-    const jCls=!J?"":(J==="OK"||J==="FROZEN"||J==="REMOTE"||J==="STATIC")?"fresh":(J==="MISSING"?"missing":"stale");
+      UNKNOWN:"判不了",UNREADABLE:"读不出",UNSCANNED:"未扫描",UNJUDGED:"不判",UNPUBLISHED:"未发布"};
+    const jCls=!J?"":(J==="OK"||J==="FROZEN"||J==="REMOTE"||J==="STATIC")?"fresh":(J==="MISSING"?"missing":
+      ((x.unjudged||x.unpublished)?"dim":"stale"));
     const jTd=J?`<td class="${jCls}" title="${esc(x.judge_why||J)}">${esc(JL[J]||J)}</td>`:"";
     if(x.missing || (!J && !x.exists)) return `<tr>${name}${jTd||`<td class="missing">缺失</td>`}<td></td><td></td><td>${esc(x.frequency||"")}</td><td class="dim">${esc(x.rel)}</td><td class="dim">${esc(x.generator)}</td></tr>`;
     if(!x.exists) return `<tr>${name}${jTd}<td class="dim">-</td><td></td><td>${esc(x.frequency||"")}</td><td class="dim">${esc(x.rel)}</td><td class="dim">${esc(x.generator)}</td></tr>`;
@@ -916,10 +917,12 @@ async function loadData(){
   const gcards=gsrc.map(g=>{
     const on=(g.key===dataGroup)?" on":"";
     const bad=g.stale+g.missing;
+    // 未发布 / 判不了 不算异常, 只附注 (老数据包没有这两个字段)
+    const side=[(g.unpublished?"未发布 "+g.unpublished:""),(g.unjudged?"判不了 "+g.unjudged:"")].filter(Boolean).join(" / ");
     return `<div class="datacard groupcard${on}" onclick="setDataGroup('${g.key}')">
       <div class="k">${esc(g.label)}</div>
       <div class="v">${g.total}<span style="font-size:12px;font-weight:400"> 项</span></div>
-      <div style="font-size:11px;margin-top:2px">${bad?`<span class="stale">静止 ${g.stale} / 缺失 ${g.missing}</span>`:`<span class="fresh">全部活跃</span>`}</div>
+      <div style="font-size:11px;margin-top:2px">${bad?`<span class="stale">静止 ${g.stale} / 缺失 ${g.missing}</span>`:`<span class="fresh">全部活跃</span>`}${side?` <span class="dim">(${side})</span>`:""}</div>
     </div>`;
   }).join("");
   const L=await jget("/api/data/layer?group="+encodeURIComponent(dataGroup)+dataMQ("&"));

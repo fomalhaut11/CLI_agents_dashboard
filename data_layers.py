@@ -185,6 +185,7 @@ def build_catalog(data_root):
                 "generator": (node.get("generator") or "").split("::")[0],
                 "daily_call": node.get("daily_call") or "",
                 "external_tokens": ext_tokens,
+                "repo": (str(node.get("repo")).strip() if node.get("repo") else ""),
             })
     out.sort(key=lambda x: (x["group"], x["layer"], x["name"].lower()))
     return out
@@ -397,7 +398,10 @@ def scan_content(data_root, group=None, verbose=True, force=False):
 # 快照 (lineage_snapshot.py, 判据 = core.data_endpoint strict, 同 manage.py data scan); 没有快照
 # (可移植版 / 从未刷新) 才退回 mtime。快照不自动刷新, 页面显示其生成时间。
 LINEAGE_SNAPSHOT = os.path.join(DASH_DIR, "_lineage_snapshot.json")
-JUDGE_STALE = {"STALE", "UNKNOWN", "UNREADABLE", "UNSCANNED", "UNJUDGED"}
+# 2026-11-09: 判不了 (读不出截止日 / 声明不判 / 没扫) 不算落后, 单列; 研究库 (repo:) 产出、基座不跑的节点
+# 不存在时判据给 MISSING, 页面改记"未发布", 不算缺失。只改显示与计数, 判据本身 (快照 status) 不动。
+JUDGE_STALE = {"STALE", "UNREADABLE"}
+JUDGE_UNJUDGED = {"UNKNOWN", "UNSCANNED", "UNJUDGED"}
 
 
 def load_judge():
@@ -416,8 +420,13 @@ def _apply_judge(e, judge):
         e["judge"] = None
         return
     st = j.get("status")
-    e["judge"] = st
     e["judge_why"] = j.get("why") or ""
+    if st == "MISSING" and e.get("repo"):
+        st = "UNPUBLISHED"
+        e["judge_why"] = "研究库 %s 产出, 基座日更不跑; 未发布 (判据: %s)" % (e["repo"], e["judge_why"])
+    e["judge"] = st
+    e["unjudged"] = st in JUDGE_UNJUDGED
+    e["unpublished"] = st == "UNPUBLISHED"
     if j.get("endpoint"):
         e["content_date"] = j["endpoint"]
         e["content_cached"] = True
@@ -449,21 +458,34 @@ def overview(data_root, group=None):
     return {"rows": rows, "scanned_at": cache.get("scanned_at", ""), "judged_at": judged_at}
 
 
+def new_group_agg():
+    return {k: {"key": k, "label": lbl, "total": 0, "stale": 0, "missing": 0, "unpublished": 0, "unjudged": 0}
+            for k, lbl in GROUPS}
+
+
+def count_entry(agg, e):
+    """一项计入所在组: 缺失 > 未发布 > 判不了 > 落后, 互斥。"""
+    a = agg[e["group"]]
+    a["total"] += 1
+    if _is_missing(e):
+        a["missing"] += 1
+    elif e.get("unpublished"):
+        a["unpublished"] += 1
+    elif e.get("unjudged"):
+        a["unjudged"] += 1
+    elif e["stale"]:
+        a["stale"] += 1
+
+
 def group_summary(data_root):
     """三组的计数/过期数, 给页面顶部的卡片 (判据同 overview)。"""
     now = time.time()
     judge, _ = load_judge()
-    agg = {k: {"key": k, "label": lbl, "total": 0, "stale": 0, "missing": 0}
-           for k, lbl in GROUPS}
+    agg = new_group_agg()
     for e in build_catalog(data_root):
         stat_entry(e, now)
         _apply_judge(e, judge)
-        a = agg[e["group"]]
-        a["total"] += 1
-        if _is_missing(e):
-            a["missing"] += 1
-        elif e["stale"]:
-            a["stale"] += 1
+        count_entry(agg, e)
     return [agg[k] for k, _ in GROUPS]
 
 
@@ -486,8 +508,8 @@ def main(argv=None):
         scan_content(data_root, args.group, force=args.force)
         return 0
     for g in group_summary(data_root):
-        print("%-12s total=%-4d stale=%-4d missing=%d"
-              % (g["label"], g["total"], g["stale"], g["missing"]))
+        print("%-12s total=%-4d stale=%-4d missing=%-4d unpublished=%-4d unjudged=%d"
+              % (g["label"], g["total"], g["stale"], g["missing"], g["unpublished"], g["unjudged"]))
     return 0
 
 
